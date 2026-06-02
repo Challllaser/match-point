@@ -1,0 +1,3 @@
+PassengerEnabled On
+PassengerPython /usr/bin/python3
+PassengerStartupFile passenger_wsgi.py

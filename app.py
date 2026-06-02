@@ -1,8 +1,11 @@
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, quote, urlparse
 from http.cookies import SimpleCookie
+from http import HTTPStatus
+from email.message import Message
 import hashlib
 import html
+import io
 import os
 import secrets
 import shutil
@@ -1636,6 +1639,58 @@ def chips(text):
 def table(headers, rows):
     head = "".join(f"<th>{esc(h)}</th>" for h in headers)
     return f"<section class='panel table-wrap'><table><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></section>"
+
+
+def _wsgi_headers(environ):
+    headers = Message()
+    if environ.get("CONTENT_TYPE"):
+        headers["Content-Type"] = environ["CONTENT_TYPE"]
+    if environ.get("CONTENT_LENGTH"):
+        headers["Content-Length"] = environ["CONTENT_LENGTH"]
+    for key, value in environ.items():
+        if key.startswith("HTTP_"):
+            name = key[5:].replace("_", "-").title()
+            headers[name] = value
+    return headers
+
+
+def application(environ, start_response):
+    init_db()
+    method = environ.get("REQUEST_METHOD", "GET").upper()
+    path = environ.get("PATH_INFO", "/") or "/"
+    query = environ.get("QUERY_STRING", "")
+    if query:
+        path = f"{path}?{query}"
+
+    length = int(environ.get("CONTENT_LENGTH") or 0)
+    body = environ["wsgi.input"].read(length) if length else b""
+
+    handler = App.__new__(App)
+    handler.command = method
+    handler.path = path
+    handler.headers = _wsgi_headers(environ)
+    handler.rfile = io.BytesIO(body)
+    handler.wfile = io.BytesIO()
+    handler._wsgi_status = 200
+    handler._wsgi_headers = []
+
+    def send_response(code, message=None):
+        handler._wsgi_status = code
+
+    def send_header(key, value):
+        handler._wsgi_headers.append((key, str(value)))
+
+    def end_headers():
+        return None
+
+    handler.send_response = send_response
+    handler.send_header = send_header
+    handler.end_headers = end_headers
+    handler.route()
+
+    reason = HTTPStatus(handler._wsgi_status).phrase
+    start_response(f"{handler._wsgi_status} {reason}", handler._wsgi_headers)
+    return [handler.wfile.getvalue()]
 
 
 if __name__ == "__main__":
