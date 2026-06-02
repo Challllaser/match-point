@@ -1152,7 +1152,12 @@ class App(BaseHTTPRequestHandler):
             return
         with db() as conn:
             items = conn.execute("SELECT * FROM users ORDER BY id DESC").fetchall()
-        rows = "".join(f"<tr><td>{u['id']}</td><td>{esc(u['login'])}</td><td>{esc(u['full_name']) or '-'}</td><td><span class='badge'>{esc(u['role'])}</span></td><td>{esc(u['created_at'])}</td><td>{'Нельзя удалить себя' if u['id']==user['id'] else f'<a class=\"danger\" href=\"/admin/delete?type=user&id={u['id']}\">Удалить</a>'}</td></tr>" for u in items)
+        rows = ""
+        for u in items:
+            action = "Нельзя удалить себя"
+            if u["id"] != user["id"]:
+                action = f"<a class='danger' href='/admin/delete?type=user&id={u['id']}'>Удалить</a>"
+            rows += f"<tr><td>{u['id']}</td><td>{esc(u['login'])}</td><td>{esc(u['full_name']) or '-'}</td><td><span class='badge'>{esc(u['role'])}</span></td><td>{esc(u['created_at'])}</td><td>{action}</td></tr>"
         self.send_html(f"<section class='section-head'><h1>Управление пользователями</h1><a class='btn' href='/admin'>Назад</a></section>{table(['ID','Логин','ФИО','Роль','Дата регистрации','Действия'], rows)}<p class='note'>Удаление пользователя также очищает связанные членства в командах.</p>", "Пользователи")
 
     def admin_teams(self):
