@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: match-point
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python app.py"
+    envVars:
+      - key: DATA_DIR
+        value: /data
+    disk:
+      name: match-point-data
+      mountPath: /data
+      sizeGB: 1
