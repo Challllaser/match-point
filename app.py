@@ -7,6 +7,7 @@ import hashlib
 import html
 import io
 import os
+import re
 import secrets
 import shutil
 import sqlite3
@@ -143,7 +144,16 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 tag TEXT NOT NULL,
-                description TEXT
+                description TEXT,
+                map_pool TEXT,
+                rule_presets TEXT
+            );
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                token TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
             CREATE TABLE IF NOT EXISTS teams (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -257,6 +267,8 @@ def init_db():
         )
         ensure_column(conn, "teams", "join_password", "TEXT")
         ensure_column(conn, "teams", "join_key", "TEXT")
+        ensure_column(conn, "disciplines", "map_pool", "TEXT")
+        ensure_column(conn, "disciplines", "rule_presets", "TEXT")
         ensure_column(conn, "veto_actions", "match_id", "INTEGER")
         ensure_column(conn, "messages", "media_url", "TEXT")
         ensure_column(conn, "messages", "emoji", "TEXT")
@@ -308,15 +320,27 @@ class App(BaseHTTPRequestHandler):
     def current_user(self):
         cookie = SimpleCookie(self.headers.get("Cookie", ""))
         token = cookie.get("session")
-        if not token or token.value not in SESSIONS:
+        if not token:
             return None
         with db() as conn:
-            return conn.execute("SELECT * FROM users WHERE id = ?", (SESSIONS[token.value],)).fetchone()
+            session = conn.execute("SELECT * FROM user_sessions WHERE token = ?", (token.value,)).fetchone()
+            if not session:
+                return None
+            conn.execute("UPDATE user_sessions SET last_seen = ? WHERE token = ?", (now(), token.value))
+            return conn.execute("SELECT * FROM users WHERE id = ?", (session["user_id"],)).fetchone()
 
     def send_html(self, body, title="Матч Поинт", status=200):
         user = self.current_user()
         page = layout(body, title, user, self.query.get("msg"))
         data = page.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_fragment(self, body, status=200):
+        data = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
@@ -360,7 +384,9 @@ class App(BaseHTTPRequestHandler):
             "/tournament/edit": self.tournament_edit,
             "/tournament/register": self.tournament_register,
             "/tournament/message": self.tournament_message,
+            "/tournament/messages": self.tournament_messages,
             "/chat/global": self.global_message,
+            "/chat/global/feed": self.global_feed,
             "/match/score": self.match_score,
             "/bracket": self.bracket,
             "/veto": self.veto,
@@ -426,7 +452,7 @@ class App(BaseHTTPRequestHandler):
             top_teams = rating_teams(conn, discipline_filter)
             top_players = rating_players(conn, discipline_filter)
             global_messages = conn.execute(
-                "SELECT gm.*, u.login FROM global_messages gm JOIN users u ON u.id=gm.user_id ORDER BY gm.id DESC LIMIT 8"
+                "SELECT * FROM (SELECT gm.*, u.login FROM global_messages gm JOIN users u ON u.id=gm.user_id ORDER BY gm.id DESC LIMIT 40) ORDER BY id"
             ).fetchall()
         cards = "".join(tournament_card(t) for t in tournaments) or "<p class='muted'>Пока нет турниров. Создайте первый.</p>"
         teams_html = "".join(f"<a class='rank-row' href='/team?id={t['id']}'><b>{esc(t['name'])}</b><span>{esc(t['discipline'])} · {t['points']} очков</span></a>" for t in top_teams) or "<p class='muted'>Команд пока нет.</p>"
@@ -434,6 +460,7 @@ class App(BaseHTTPRequestHandler):
         global_chat = "".join(message_html(m) for m in global_messages) or "<p class='muted'>В общем чате пока пусто.</p>"
         user = self.current_user()
         chat_form = global_chat_form() if user else "<a class='btn primary' href='/login'>Войти в общий чат</a>"
+        chat_panel = chat_shell("Общий чат", global_chat, chat_form, "/chat/global/feed")
         self.send_html(
             f"""
             <section class="hero">
@@ -461,7 +488,7 @@ class App(BaseHTTPRequestHandler):
             <section class="grid portal-grid">
                 <section class="panel"><h2>Топ команд</h2>{teams_html}</section>
                 <section class="panel"><h2>Топ игроков</h2>{players_html}</section>
-                <section class="panel global-chat"><h2>Общий чат</h2>{global_chat}{chat_form}</section>
+                {chat_panel}
             </section>
             <section class="section-head"><h2>Готовящиеся турниры</h2><a href="/tournaments">Все турниры</a></section>
             <div class="cards">{cards}</div>
@@ -476,10 +503,14 @@ class App(BaseHTTPRequestHandler):
                 user = conn.execute("SELECT * FROM users WHERE login = ?", (data.get("login", ""),)).fetchone()
             if user and check_password(data.get("password", ""), user["password_hash"]):
                 token = secrets.token_urlsafe(24)
-                SESSIONS[token] = user["id"]
+                with db() as conn:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO user_sessions(token, user_id, created_at, last_seen) VALUES(?,?,?,?)",
+                        (token, user["id"], now(), now()),
+                    )
                 self.send_response(303)
                 self.send_header("Location", safe_location("/dashboard?msg=Успешный вход в систему"))
-                self.send_header("Set-Cookie", f"session={token}; Path=/; HttpOnly")
+                self.send_header("Set-Cookie", f"session={token}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax")
                 self.end_headers()
                 return
             return self.redirect("/login?msg=Неверный логин или пароль")
@@ -508,9 +539,11 @@ class App(BaseHTTPRequestHandler):
         token = cookie.get("session")
         if token:
             SESSIONS.pop(token.value, None)
+            with db() as conn:
+                conn.execute("DELETE FROM user_sessions WHERE token = ?", (token.value,))
         self.send_response(303)
         self.send_header("Location", "/")
-        self.send_header("Set-Cookie", "session=; Path=/; Max-Age=0")
+        self.send_header("Set-Cookie", "session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
         self.end_headers()
 
     def dashboard(self):
@@ -652,13 +685,13 @@ class App(BaseHTTPRequestHandler):
                 (tid,),
             ).fetchall()
             messages = conn.execute(
-                "SELECT m.*, u.login FROM messages m JOIN users u ON u.id = m.user_id WHERE tournament_id = ? ORDER BY m.id DESC LIMIT 12",
+                "SELECT * FROM (SELECT m.*, u.login FROM messages m JOIN users u ON u.id = m.user_id WHERE tournament_id = ? ORDER BY m.id DESC LIMIT 40) ORDER BY id",
                 (tid,),
             ).fetchall()
             my_teams = []
             if user:
                 my_teams = conn.execute(
-                    "SELECT t.* FROM teams t JOIN team_members tm ON tm.team_id = t.id WHERE tm.user_id = ?",
+                    "SELECT t.*, tm.team_role FROM teams t JOIN team_members tm ON tm.team_id = t.id WHERE tm.user_id = ?",
                     (user["id"],),
                 ).fetchall()
         if not t:
@@ -670,8 +703,11 @@ class App(BaseHTTPRequestHandler):
         participants = "".join(f"<a class='team-tile' href='/team?id={r['team_id']}'><b>{esc(r['name'])}</b><span>{esc(r['discipline'])} · {esc(r['tag'])}</span></a>" for r in regs) or "<p class='muted'>Команды пока не зарегистрированы.</p>"
         chat = "".join(message_html(m) for m in messages) or "<p class='muted'>В чате пока тихо.</p>"
         chat_form = tournament_chat_form(t["id"]) if user else ""
+        chat_panel = chat_shell("Чат турнира", chat, chat_form, f"/tournament/messages?id={t['id']}")
+        winner_banner = finished_winner_banner(t["id"]) if t["status"] == "FINISHED" else ""
         self.send_html(
             f"""
+            {winner_banner}
             <section class="tournament-title">
                 <div><h1>{esc(t['title'])}</h1><p>{esc(t['discipline'])} · {esc(t['format'])} · {esc(t['start_date'] or 'Дата не указана')} · <span class='badge'>{esc(t['status'])}</span></p></div>
                 <a class="btn" href="/tournaments">Все турниры</a>
@@ -686,7 +722,7 @@ class App(BaseHTTPRequestHandler):
                         <h3>Правила</h3><p>{esc(t['rules']) or 'Стандартные правила дисциплины.'}</p>
                     </section>
                     <section class="panel"><h2>Участники <span>{len(regs)}/{t['max_teams']}</span></h2><div class="team-list">{participants}</div></section>
-                    <section class="panel"><h2>Чат турнира</h2>{chat}{chat_form}</section>
+                    {chat_panel}
                 </main>
                 <aside class="panel sticky"><h2>Ваша команда</h2>{register_form}<a class="btn" href="/bracket?id={t['id']}">Сетка и бан-пики</a>{edit}{delete}</aside>
             </div>
@@ -708,6 +744,10 @@ class App(BaseHTTPRequestHandler):
             count = conn.execute("SELECT COUNT(*) c FROM registrations WHERE tournament_id = ?", (tid,)).fetchone()["c"]
             if not t or not member:
                 return self.redirect(f"/tournament?id={tid}&msg=Выберите свою команду")
+            if t["status"] == "FINISHED":
+                return self.redirect(f"/tournament?id={tid}&msg=Турнир завершен, регистрация закрыта")
+            if member["team_role"] not in ("Капитан", "Тренер", "Менеджер"):
+                return self.redirect(f"/tournament?id={tid}&msg=Регистрировать команду может только капитан, тренер или менеджер")
             if t["is_private"] and code != (t["private_code"] or ""):
                 return self.redirect(f"/tournament?id={tid}&msg=Неверный код приватного турнира")
             if count >= t["max_teams"]:
@@ -723,13 +763,24 @@ class App(BaseHTTPRequestHandler):
         if not user:
             return
         tid = self.query.get("id")
-        body = self.form().get("body", "").strip()
-        media_url = self.form().get("media_url", "").strip()
-        emoji = self.form().get("emoji", "").strip()
+        form = self.form()
+        body = form.get("body", "").strip()
+        media_url = form.get("media_url", "").strip()
+        emoji = form.get("emoji", "").strip()
         if body or media_url or emoji:
             with db() as conn:
                 conn.execute("INSERT INTO messages(tournament_id, user_id, body, media_url, emoji, created_at) VALUES(?,?,?,?,?,?)", (tid, user["id"], body, media_url, emoji, now()))
         self.redirect(f"/tournament?id={tid}")
+
+    def tournament_messages(self):
+        tid = self.query.get("id")
+        with db() as conn:
+            messages = conn.execute(
+                "SELECT * FROM (SELECT m.*, u.login FROM messages m JOIN users u ON u.id=m.user_id WHERE m.tournament_id=? ORDER BY m.id DESC LIMIT 40) ORDER BY id",
+                (tid,),
+            ).fetchall()
+        html_body = "".join(message_html(m) for m in messages) or "<p class='muted'>В чате пока тихо.</p>"
+        self.send_fragment(html_body)
 
     def global_message(self):
         user = self.require_user()
@@ -743,6 +794,14 @@ class App(BaseHTTPRequestHandler):
             with db() as conn:
                 conn.execute("INSERT INTO global_messages(user_id, body, media_url, emoji, created_at) VALUES(?,?,?,?,?)", (user["id"], body, media_url, emoji, now()))
         self.redirect("/")
+
+    def global_feed(self):
+        with db() as conn:
+            messages = conn.execute(
+                "SELECT * FROM (SELECT gm.*, u.login FROM global_messages gm JOIN users u ON u.id=gm.user_id ORDER BY gm.id DESC LIMIT 40) ORDER BY id"
+            ).fetchall()
+        html_body = "".join(message_html(m) for m in messages) or "<p class='muted'>В общем чате пока пусто.</p>"
+        self.send_fragment(html_body)
 
     def match_score(self):
         user = self.require_user()
@@ -1139,12 +1198,15 @@ class App(BaseHTTPRequestHandler):
         if self.command == "POST":
             data = self.form()
             with db() as conn:
-                conn.execute("INSERT INTO disciplines(name, tag, description) VALUES(?,?,?)", (data.get("name"), data.get("tag"), data.get("description")))
+                conn.execute(
+                    "INSERT INTO disciplines(name, tag, description, map_pool, rule_presets) VALUES(?,?,?,?,?)",
+                    (data.get("name"), data.get("tag"), data.get("description"), data.get("map_pool"), data.get("rule_presets")),
+                )
             return self.redirect("/admin/disciplines?msg=Дисциплина добавлена")
         with db() as conn:
             items = conn.execute("SELECT * FROM disciplines ORDER BY id DESC").fetchall()
         rows = "".join(f"<tr><td>{d['id']}</td><td>{esc(d['name'])}</td><td><span class='badge'>{esc(d['tag'])}</span></td><td>{esc(d['description'])}</td><td><a class='danger' href='/admin/delete?type=discipline&id={d['id']}'>Удалить</a></td></tr>" for d in items)
-        self.send_html(f"<section class='section-head'><h1>Игровые дисциплины</h1><a class='btn' href='/admin'>Назад</a></section><section class='panel'><h2>Добавить новую дисциплину</h2><form method='post' class='form grid-form'><label>Название<input name='name' required></label><label>Короткий тег<input name='tag' required></label><label class='wide'>Описание<textarea name='description'></textarea></label><button class='btn primary'>Добавить</button></form></section>{table(['ID','Название','Тег','Описание','Действия'], rows)}", "Дисциплины")
+        self.send_html(f"<section class='section-head'><h1>Игровые дисциплины</h1><a class='btn' href='/admin'>Назад</a></section><section class='panel'><h2>Добавить новую дисциплину</h2><form method='post' class='form grid-form'><label>Название<input name='name' required></label><label>Короткий тег<input name='tag' required></label><label class='wide'>Описание<textarea name='description'></textarea></label><label class='wide'>Пул карт / режимов<textarea name='map_pool' placeholder='Dust2, Mirage, Inferno'></textarea></label><label class='wide'>Правила<textarea name='rule_presets' placeholder='Одно правило на строку'></textarea></label><button class='btn primary'>Добавить</button></form></section>{table(['ID','Название','Тег','Описание','Действия'], rows)}", "Дисциплины")
 
     def admin_users(self):
         user = self.require_admin()
@@ -1269,6 +1331,13 @@ def game_tag_for_discipline(discipline_id):
 
 
 def game_maps_for_discipline(discipline_id):
+    if discipline_id:
+        with db() as conn:
+            row = conn.execute("SELECT tag, map_pool FROM disciplines WHERE id=?", (discipline_id,)).fetchone()
+        if row and row["map_pool"]:
+            return split_csv(row["map_pool"])
+        if row:
+            return GAME_MAPS.get(row["tag"].upper(), [])
     return GAME_MAPS.get(game_tag_for_discipline(discipline_id), [])
 
 
@@ -1406,7 +1475,13 @@ def veto_progress(tournament, match, actions):
 def map_pool_controls(selected_text="", selected_discipline=None):
     selected = set(split_csv(selected_text))
     groups = []
-    for tag, maps in GAME_MAPS.items():
+    with db() as conn:
+        disciplines = conn.execute("SELECT * FROM disciplines ORDER BY name").fetchall()
+    for discipline in disciplines:
+        tag = discipline["tag"].upper()
+        maps = split_csv(discipline["map_pool"]) if discipline["map_pool"] else GAME_MAPS.get(tag, [])
+        if not maps:
+            continue
         checks = "".join(
             f"<label class='check option-check'><input type='checkbox' name='maps' value='{esc(map_name)}' {'checked' if map_name in selected else ''}> {esc(map_name)}</label>"
             for map_name in maps
@@ -1419,7 +1494,13 @@ def map_pool_controls(selected_text="", selected_discipline=None):
 def rules_options(selected="", selected_discipline=None):
     active_tag = game_tag_for_discipline(selected_discipline)
     options = []
-    for tag, rules in RULE_PRESETS.items():
+    with db() as conn:
+        disciplines = conn.execute("SELECT * FROM disciplines ORDER BY name").fetchall()
+    for discipline in disciplines:
+        tag = discipline["tag"].upper()
+        rules = split_csv(discipline["rule_presets"]) if discipline["rule_presets"] else RULE_PRESETS.get(tag, [])
+        if not rules:
+            continue
         inner = "".join(f"<option value='{esc(rule)}' {'selected' if selected == rule else ''}>{esc(rule[:96])}</option>" for rule in rules)
         active = "data-active='1'" if tag == active_tag else ""
         options.append(f"<optgroup label='{esc(tag)}' data-game='{esc(tag)}' {active}>{inner}</optgroup>")
@@ -1506,6 +1587,74 @@ def global_chat_form():
         <input name="body" placeholder="Общий чат...">
         <input name="media_url" placeholder="Ссылка на фото/GIF">
         <button class="icon-btn">➤</button>
+    </form>
+    """
+
+
+def chat_shell(title, messages, form, feed_url):
+    return f"""
+    <section class="panel chat-shell" data-chat-feed="{esc(feed_url)}">
+        <h2>{title}</h2>
+        <div class="chat-messages" data-chat-messages>{messages}</div>
+        {form}
+    </section>
+    """
+
+
+def extract_media_urls(text):
+    urls = re.findall(r"https?://[^\s<>'\"]+", text or "")
+    return [url.rstrip(").,!?") for url in urls]
+
+
+def is_media_url(url):
+    clean = url.split("?", 1)[0].lower()
+    return any(clean.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".gif", ".webp"])
+
+
+def message_html(m):
+    body = m["body"] or ""
+    urls = []
+    if "media_url" in m.keys() and m["media_url"]:
+        urls.append(m["media_url"])
+    urls.extend(extract_media_urls(body))
+    media = ""
+    seen = set()
+    for url in urls:
+        if url in seen:
+            continue
+        seen.add(url)
+        if is_media_url(url):
+            media += f"<img class='chat-media' src='{esc(url)}' alt='media' loading='lazy'>"
+        else:
+            media += f"<a class='chat-media-link' href='{esc(url)}' target='_blank'>{esc(url)}</a>"
+    emoji = f"<span class='chat-emoji'>{esc(m['emoji'])}</span>" if "emoji" in m.keys() and m["emoji"] else ""
+    return f"<div class='message' data-message-id='{m['id']}'><b>{esc(m['login'])}</b><time>{esc(m['created_at'])}</time><p>{emoji} {esc(body)}</p>{media}</div>"
+
+
+EMOJI_POOL = ["🔥", "💀", "🏆", "😎", "❤️", "😂", "👍", "😡", "👀", "⚡", "🎯", "🥶", "🤝", "🚀", "💪", "🤯", "🎮", "✅"]
+
+
+def emoji_buttons():
+    buttons = "".join(f"<button type='button' class='emoji-btn' data-emoji='{esc(item)}'>{esc(item)}</button>" for item in EMOJI_POOL)
+    return f"<div class='emoji-bar'>{buttons}</div>"
+
+
+def tournament_chat_form(tid):
+    return f"""
+    <form class="chat-form rich-chat" method="post" action="/tournament/message?id={tid}" data-chat-form>
+        <input type="hidden" name="emoji" data-emoji-input>
+        {emoji_buttons()}
+        <div class="chat-compose"><input name="body" placeholder="Сообщение, ссылка на фото или GIF..."><button class="icon-btn">➤</button></div>
+    </form>
+    """
+
+
+def global_chat_form():
+    return f"""
+    <form class="chat-form rich-chat" method="post" action="/chat/global" data-chat-form>
+        <input type="hidden" name="emoji" data-emoji-input>
+        {emoji_buttons()}
+        <div class="chat-compose"><input name="body" placeholder="Общий чат, ссылка на фото или GIF..."><button class="icon-btn">➤</button></div>
     </form>
     """
 
@@ -1618,11 +1767,30 @@ def join_team_form(team_id):
     """
 
 
+def finished_winner_banner(tournament_id):
+    with db() as conn:
+        winner = conn.execute(
+            """
+            SELECT teams.name FROM matches
+            JOIN teams ON teams.id = matches.winner_id
+            WHERE matches.tournament_id=? AND matches.winner_id IS NOT NULL
+            ORDER BY matches.round DESC, matches.id DESC LIMIT 1
+            """,
+            (tournament_id,),
+        ).fetchone()
+    if not winner:
+        return "<section class='winner-banner sky-bless'>Турнир завершен. Победитель еще не указан.</section>"
+    return f"<section class='winner-banner gold-bless'>Поздравляем, победитель турнира команда {esc(winner['name'])}</section>"
+
+
 def registration_form(t, my_teams, regs):
+    if t["status"] == "FINISHED":
+        return "<p class='muted'>Турнир завершен, регистрация закрыта.</p>"
     registered_ids = {r["team_id"] for r in regs}
-    options = "".join(f"<option value='{team['id']}'>{esc(team['name'])}</option>" for team in my_teams if team["id"] not in registered_ids)
+    allowed_roles = {"Капитан", "Тренер", "Менеджер"}
+    options = "".join(f"<option value='{team['id']}'>{esc(team['name'])}</option>" for team in my_teams if team["id"] not in registered_ids and team["team_role"] in allowed_roles)
     if not options:
-        return "<p class='muted'>Нет доступной команды для регистрации.</p><a class='btn' href='/team/new'>Создать команду</a>"
+        return "<p class='muted'>Нет доступной команды: регистрацию может отправить капитан, тренер или менеджер.</p><a class='btn' href='/team/new'>Создать команду</a>"
     code = "<input name='private_code' placeholder='Код турнира'>" if t["is_private"] else ""
     return f"<form method='post' action='/tournament/register?id={t['id']}' class='form'><select name='team_id'>{options}</select>{code}<button class='btn primary'>Зарегистрировать команду</button></form>"
 

@@ -71,3 +71,56 @@ document.querySelectorAll("[data-reset-after-submit]").forEach((form) => {
     setTimeout(() => form.reset(), 50);
   });
 });
+
+document.querySelectorAll("[data-chat-feed]").forEach((chat) => {
+  const feedUrl = chat.dataset.chatFeed;
+  const messages = chat.querySelector("[data-chat-messages]");
+  const form = chat.querySelector("[data-chat-form]");
+  const input = form?.querySelector("input[name='body']");
+  const emojiInput = form?.querySelector("[data-emoji-input]");
+
+  async function refreshChat(keepPosition = false) {
+    if (!feedUrl || !messages) return;
+    const nearBottom = messages.scrollTop + messages.clientHeight >= messages.scrollHeight - 80;
+    try {
+      const response = await fetch(feedUrl, { cache: "no-store" });
+      if (!response.ok) return;
+      const html = await response.text();
+      if (messages.innerHTML !== html) {
+        messages.innerHTML = html;
+        if (!keepPosition || nearBottom) messages.scrollTop = messages.scrollHeight;
+      }
+    } catch (_) {}
+  }
+
+  form?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const data = new FormData(form);
+    if (!String(data.get("body") || "").trim() && !String(data.get("emoji") || "").trim()) return;
+    try {
+      await fetch(form.action, { method: "POST", body: data });
+      form.reset();
+      if (emojiInput) emojiInput.value = "";
+      await refreshChat();
+    } catch (_) {
+      form.submit();
+    }
+  });
+
+  form?.querySelectorAll("[data-emoji]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (emojiInput) emojiInput.value = button.dataset.emoji || "";
+      form.requestSubmit();
+    });
+  });
+
+  input?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  refreshChat();
+  setInterval(() => refreshChat(true), 3500);
+});
