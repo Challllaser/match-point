@@ -76,24 +76,66 @@ document.querySelectorAll("input[type='file'][data-preview-target]").forEach((in
   input.addEventListener("change", () => {
     const file = input.files?.[0];
     const preview = document.querySelector(`[data-preview-id="${input.dataset.previewTarget}"]`);
+    const cropImage = input.name === "banner" ? document.querySelector("[data-banner-crop-image]") : null;
     const label = input.closest(".file-drop")?.querySelector("span");
     if (label) label.textContent = file ? file.name : "Выбрать файл";
     if (!preview || !file) return;
-    preview.src = URL.createObjectURL(file);
+    const url = URL.createObjectURL(file);
+    preview.src = url;
+    if (cropImage) cropImage.src = url;
     preview.classList.add("active");
   });
 });
 
-const bannerX = document.querySelector("[data-banner-x]");
-const bannerY = document.querySelector("[data-banner-y]");
-const bannerPosition = document.querySelector("[data-banner-position]");
-function updateBannerPosition() {
-  if (!bannerX || !bannerY || !bannerPosition) return;
-  bannerPosition.value = `${bannerX.value}% ${bannerY.value}%`;
-}
-bannerX?.addEventListener("input", updateBannerPosition);
-bannerY?.addEventListener("input", updateBannerPosition);
-updateBannerPosition();
+document.querySelectorAll("[data-banner-cropper]").forEach((cropper) => {
+  const stage = cropper.querySelector(".crop-stage");
+  const frame = cropper.querySelector("[data-crop-frame]");
+  const hidden = cropper.querySelector("[data-banner-position]");
+  if (!stage || !frame || !hidden) return;
+  let dragging = false;
+  let offsetX = 0;
+  let offsetY = 0;
+
+  function placeFromPercent() {
+    const rect = stage.getBoundingClientRect();
+    const f = frame.getBoundingClientRect();
+    const x = Number(cropper.dataset.x || 50);
+    const y = Number(cropper.dataset.y || 50);
+    frame.style.left = `${Math.max(0, Math.min(rect.width - f.width, rect.width * x / 100 - f.width / 2))}px`;
+    frame.style.top = `${Math.max(0, Math.min(rect.height - f.height, rect.height * y / 100 - f.height / 2))}px`;
+    hidden.value = `${Math.round(x)}% ${Math.round(y)}%`;
+  }
+
+  function updateFromPointer(clientX, clientY) {
+    const rect = stage.getBoundingClientRect();
+    const f = frame.getBoundingClientRect();
+    const left = Math.max(0, Math.min(rect.width - f.width, clientX - rect.left - offsetX));
+    const top = Math.max(0, Math.min(rect.height - f.height, clientY - rect.top - offsetY));
+    frame.style.left = `${left}px`;
+    frame.style.top = `${top}px`;
+    const x = Math.round(((left + f.width / 2) / rect.width) * 100);
+    const y = Math.round(((top + f.height / 2) / rect.height) * 100);
+    cropper.dataset.x = String(x);
+    cropper.dataset.y = String(y);
+    hidden.value = `${x}% ${y}%`;
+  }
+
+  frame.addEventListener("pointerdown", (event) => {
+    dragging = true;
+    const f = frame.getBoundingClientRect();
+    offsetX = event.clientX - f.left;
+    offsetY = event.clientY - f.top;
+    frame.setPointerCapture(event.pointerId);
+  });
+  frame.addEventListener("pointermove", (event) => {
+    if (dragging) updateFromPointer(event.clientX, event.clientY);
+  });
+  frame.addEventListener("pointerup", () => {
+    dragging = false;
+  });
+  window.addEventListener("resize", placeFromPercent);
+  requestAnimationFrame(placeFromPercent);
+});
 
 document.querySelectorAll("[data-chat-feed]").forEach((chat) => {
   const feedUrl = chat.dataset.chatFeed;

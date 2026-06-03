@@ -133,6 +133,21 @@ def profile_color(user):
     return value if re.fullmatch(r"#[0-9a-fA-F]{6}", value or "") else "#00e5ff"
 
 
+def nickname_font_size(name):
+    length = len(name or "")
+    if length <= 16:
+        return 42
+    if length <= 24:
+        return 34
+    if length <= 34:
+        return 28
+    return 22
+
+
+def valid_hex(value, default="#00e5ff"):
+    return value if re.fullmatch(r"#[0-9a-fA-F]{6}", value or "") else default
+
+
 def hex_to_rgba(value, alpha):
     value = value.lstrip("#")
     if not re.fullmatch(r"[0-9a-fA-F]{6}", value):
@@ -147,6 +162,35 @@ def is_staff(user):
 
 def is_owner(user):
     return bool(user and user["role"] == "OWNER")
+
+
+TEAM_ROLES = ["Игрок", "Капитан", "Тренер", "Менеджер", "Запасной"]
+UNIQUE_TEAM_ROLES = {"Капитан", "Тренер", "Менеджер"}
+
+
+def split_roles(value):
+    roles = [item.strip() for item in (value or "").replace(";", ",").split(",") if item.strip()]
+    clean = []
+    for role in roles:
+        if role in TEAM_ROLES and role not in clean:
+            clean.append(role)
+    return clean or ["Игрок"]
+
+
+def roles_text(value):
+    return ", ".join(split_roles(value))
+
+
+def has_team_role(value, allowed):
+    return bool(set(split_roles(value)) & set(allowed))
+
+
+def selected_team_roles(data):
+    roles = data.get("team_role[]", [])
+    if not roles and data.get("team_role"):
+        roles = [data.get("team_role")]
+    clean = [role for role in roles if role in TEAM_ROLES]
+    return ", ".join(dict.fromkeys(clean or ["Игрок"]))
 
 
 def admin_user_actions(current_user, target_user):
@@ -325,6 +369,7 @@ def init_db():
         ensure_column(conn, "teams", "join_key", "TEXT")
         ensure_column(conn, "teams", "logo_url", "TEXT")
         ensure_column(conn, "teams", "extra_discipline_ids", "TEXT")
+        ensure_column(conn, "tournaments", "logo_url", "TEXT")
         ensure_column(conn, "disciplines", "map_pool", "TEXT")
         ensure_column(conn, "disciplines", "rule_presets", "TEXT")
         ensure_column(conn, "disciplines", "logo_url", "TEXT")
@@ -337,6 +382,11 @@ def init_db():
         ensure_column(conn, "users", "banner_url", "TEXT")
         ensure_column(conn, "users", "banner_position", "TEXT")
         ensure_column(conn, "users", "profile_color", "TEXT")
+        ensure_column(conn, "users", "profile_color2", "TEXT")
+        ensure_column(conn, "users", "profile_animated", "INTEGER")
+        ensure_column(conn, "users", "nickname_color", "TEXT")
+        ensure_column(conn, "users", "nickname_color2", "TEXT")
+        ensure_column(conn, "users", "nickname_animated", "INTEGER")
         ensure_column(conn, "users", "about", "TEXT")
         ensure_column(conn, "users", "custom_role", "TEXT")
         conn.executescript(
@@ -836,10 +886,15 @@ class App(BaseHTTPRequestHandler):
         avatar = profile["avatar_url"] or "/static/matchpoint-logo-mark.png"
         banner = profile["banner_url"] or ""
         color = profile_color(profile)
-        profile_style = f"--profile-color:{esc(color)};--profile-soft:{hex_to_rgba(color, .18)};--profile-glow:{hex_to_rgba(color, .38)};"
+        color2 = valid_hex(profile["profile_color2"] if "profile_color2" in profile.keys() else "", "#ff5a00")
+        nick_color = valid_hex(profile["nickname_color"] if "nickname_color" in profile.keys() else "", color)
+        nick_color2 = valid_hex(profile["nickname_color2"] if "nickname_color2" in profile.keys() else "", color2)
+        profile_anim = "profile-flow" if profile["profile_animated"] else ""
+        nick_anim = "nick-flow" if profile["nickname_animated"] else ""
+        profile_style = f"--profile-color:{esc(color)};--profile-color-2:{esc(color2)};--profile-soft:{hex_to_rgba(color, .18)};--profile-glow:{hex_to_rgba(color, .38)};--nick-color:{esc(nick_color)};--nick-color-2:{esc(nick_color2)};"
         tag = f"<a class='profile-team-tag' href='/team?id={team['id']}'>[{esc(team['tag'])}]</a>" if team else ""
         edit = f"<a class='btn primary' href='/profile/edit'>Редактировать профиль</a>" if is_self else ""
-        custom = f"<span class='profile-custom-role'>{esc(profile['custom_role'])}</span>" if profile["custom_role"] else ""
+        custom = "".join(f"<span class='profile-custom-role'>{esc(role)}</span>" for role in split_csv(profile["custom_role"])) if profile["custom_role"] else ""
         role_form = profile_role_form(profile) if is_staff(viewer) else ""
         comments_html = "".join(profile_comment_html(c, can_moderate or (viewer and viewer["id"] == c["author_id"])) for c in comments) or "<p class='muted'>Комментариев пока нет.</p>"
         comment_form = f"""
@@ -851,14 +906,15 @@ class App(BaseHTTPRequestHandler):
         trophy_html = "".join(trophy_card(t) for t in trophies) or "<p class='muted'>Трофеи появятся после турниров.</p>"
         banner_pos = profile["banner_position"] or "50% 50%"
         banner_media = f"<img class='profile-banner-media' src='{esc(banner)}' alt='banner' style='object-position:{esc(banner_pos)}'>" if banner else ""
+        name_size = nickname_font_size(display_name(profile))
         self.send_html(
             f"""
-            <section class='profile-page' style='{profile_style}'>
+            <section class='profile-page {profile_anim}' style='{profile_style}'>
                 <div class='profile-banner'>{banner_media}</div>
                 <div class='profile-main'>
                     <aside class='profile-identity panel'>
                         <img class='profile-avatar' src='{esc(avatar)}' alt='avatar'>
-                        <h1>{tag}{esc(display_name(profile))}</h1>
+                        <h1 class='{nick_anim}' style='font-size:{name_size}px'>{tag}{esc(display_name(profile))}</h1>
                         <div class='profile-badges'><span class='badge'>{esc(profile['role'])}</span>{custom}</div>
                         {edit}{role_form}
                     </aside>
@@ -887,6 +943,11 @@ class App(BaseHTTPRequestHandler):
             color = data.get("profile_color", "#00e5ff").strip()
             if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
                 color = "#00e5ff"
+            color2 = valid_hex(data.get("profile_color2", "#ff5a00"), "#ff5a00")
+            nick_color = valid_hex(data.get("nickname_color", color), color)
+            nick_color2 = valid_hex(data.get("nickname_color2", color2), color2)
+            profile_animated = 1 if data.get("profile_animated") else 0
+            nickname_animated = 1 if data.get("nickname_animated") else 0
             about = data.get("about", "").strip()[:1200]
             selected_avatar = data.get("selected_avatar") or ""
             selected_banner = data.get("selected_banner") or ""
@@ -899,8 +960,8 @@ class App(BaseHTTPRequestHandler):
             remember_profile_media(user["id"], "banner", banner_url)
             with db() as conn:
                 conn.execute(
-                    "UPDATE users SET nickname=?, profile_color=?, about=?, avatar_url=?, banner_url=?, banner_position=? WHERE id=?",
-                    (nickname, color, about, avatar_url, banner_url, banner_position, user["id"]),
+                    "UPDATE users SET nickname=?, profile_color=?, profile_color2=?, profile_animated=?, nickname_color=?, nickname_color2=?, nickname_animated=?, about=?, avatar_url=?, banner_url=?, banner_position=? WHERE id=?",
+                    (nickname, color, color2, profile_animated, nick_color, nick_color2, nickname_animated, about, avatar_url, banner_url, banner_position, user["id"]),
                 )
             return self.redirect(f"/profile?id={user['id']}&msg=Профиль обновлен")
         self.send_html(profile_edit_form(user), "Редактирование профиля")
@@ -985,17 +1046,18 @@ class App(BaseHTTPRequestHandler):
         if not user:
             return
         if self.command == "POST":
-            data = self.form()
+            data, files = self.multipart_form()
+            logo_url = save_public_upload(files.get("logo"), f"tournament_logo_{user['id']}")
             with db() as conn:
                 conn.execute(
                     """
-                    INSERT INTO tournaments(title, discipline_id, format, max_teams, start_date, description, rules, maps, bans, is_private, private_code, status, creator_id, created_at)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    INSERT INTO tournaments(title, discipline_id, format, max_teams, start_date, description, rules, maps, bans, is_private, private_code, status, creator_id, logo_url, created_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         data.get("title"), data.get("discipline_id"), data.get("format"), int(data.get("max_teams", 4)),
                         data.get("start_date"), data.get("description"), data.get("rules"), collect_selected_maps(data, data.get("discipline_id")),
-                        data.get("bans") or "Faceit veto: капитаны по очереди банят и выбирают карты перед стартом матча.", 1 if data.get("is_private") else 0, data.get("private_code"), "DRAFT", user["id"], now(),
+                        data.get("bans") or "Faceit veto: капитаны по очереди банят и выбирают карты перед стартом матча.", 1 if data.get("is_private") else 0, data.get("private_code"), "DRAFT", user["id"], logo_url, now(),
                     ),
                 )
             return self.redirect("/tournaments?msg=Турнир создан")
@@ -1013,16 +1075,17 @@ class App(BaseHTTPRequestHandler):
         if not is_staff(user) and tournament["creator_id"] != user["id"]:
             return self.redirect(f"/tournament?id={tid}&msg=Нет прав на редактирование")
         if self.command == "POST":
-            data = self.form()
+            data, files = self.multipart_form()
+            logo_url = save_public_upload(files.get("logo"), f"tournament_logo_{tid}") or tournament["logo_url"]
             with db() as conn:
                 conn.execute(
                     """
-                    UPDATE tournaments SET title=?, discipline_id=?, format=?, max_teams=?, start_date=?, description=?, rules=?, maps=?, bans=?, is_private=?, private_code=?, status=? WHERE id=?
+                    UPDATE tournaments SET title=?, discipline_id=?, format=?, max_teams=?, start_date=?, description=?, rules=?, maps=?, bans=?, is_private=?, private_code=?, status=?, logo_url=? WHERE id=?
                     """,
                     (
                         data.get("title"), data.get("discipline_id"), data.get("format"), int(data.get("max_teams", 4)),
                         data.get("start_date"), data.get("description"), data.get("rules"), collect_selected_maps(data, data.get("discipline_id")), data.get("bans") or "Faceit veto: капитаны по очереди банят и выбирают карты перед стартом матча.",
-                        1 if data.get("is_private") else 0, data.get("private_code"), data.get("status", tournament["status"]), tid,
+                        1 if data.get("is_private") else 0, data.get("private_code"), data.get("status", tournament["status"]), logo_url, tid,
                     ),
                 )
             return self.redirect(f"/tournament?id={tid}&msg=Турнир обновлен")
@@ -1074,11 +1137,12 @@ class App(BaseHTTPRequestHandler):
         chat_form = tournament_chat_form(t["id"]) if user else ""
         chat_panel = chat_shell("Чат турнира", chat, chat_form, f"/tournament/messages?id={t['id']}")
         winner_banner = finished_winner_banner(t["id"]) if t["status"] == "FINISHED" else ""
+        tournament_logo = f"<img class='tournament-logo-large' src='{esc(t['logo_url'])}' alt='logo'>" if t["logo_url"] else ""
         self.send_html(
             f"""
             {winner_banner}
             <section class="tournament-title">
-                <div><h1>{esc(t['title'])}</h1><p>{esc(t['discipline'])} · {esc(t['format'])} · {esc(t['start_date'] or 'Дата не указана')} · <span class='badge'>{esc(t['status'])}</span></p></div>
+                {tournament_logo}<div><h1>{esc(t['title'])}</h1><p>{esc(t['discipline'])} · {esc(t['format'])} · {esc(t['start_date'] or 'Дата не указана')} · <span class='badge'>{esc(t['status'])}</span></p></div>
                 <a class="btn" href="/tournaments">Все турниры</a>
             </section>
             <div class="grid aside">
@@ -1115,7 +1179,7 @@ class App(BaseHTTPRequestHandler):
                 return self.redirect(f"/tournament?id={tid}&msg=Выберите свою команду")
             if t["status"] == "FINISHED":
                 return self.redirect(f"/tournament?id={tid}&msg=Турнир завершен, регистрация закрыта")
-            if member["team_role"] not in ("Капитан", "Тренер", "Менеджер"):
+            if not has_team_role(member["team_role"], ("Капитан", "Тренер", "Менеджер")):
                 return self.redirect(f"/tournament?id={tid}&msg=Регистрировать команду может только владелец, тренер или менеджер")
             if t["is_private"] and code != (t["private_code"] or ""):
                 return self.redirect(f"/tournament?id={tid}&msg=Неверный код приватного турнира")
@@ -1138,7 +1202,7 @@ class App(BaseHTTPRequestHandler):
             member = conn.execute("SELECT * FROM team_members WHERE team_id = ? AND user_id = ?", (team_id, user["id"])).fetchone()
             if not t or not member:
                 return self.redirect(f"/tournament?id={tid}&msg=Команда не найдена")
-            if member["team_role"] not in ("Капитан", "Тренер", "Менеджер") and not is_staff(user):
+            if not has_team_role(member["team_role"], ("Капитан", "Тренер", "Менеджер")) and not is_staff(user):
                 return self.redirect(f"/tournament?id={tid}&msg=Снять команду может владелец, тренер или менеджер")
             conn.execute("DELETE FROM registrations WHERE tournament_id=? AND team_id=?", (tid, team_id))
         self.redirect(f"/tournament?id={tid}&msg=Команда снята с турнира")
@@ -1631,17 +1695,17 @@ class App(BaseHTTPRequestHandler):
         with db() as conn:
             team = conn.execute("SELECT * FROM teams WHERE id = ?", (team_id,)).fetchone()
             if team and (team["captain_id"] == user["id"] or is_staff(user)):
-                new_role = data.get("team_role")
+                new_role = selected_team_roles(data)
                 target_id = data.get("user_id")
-                if new_role in ("Капитан", "Тренер", "Менеджер"):
-                    exists = conn.execute(
-                        "SELECT user_id FROM team_members WHERE team_id=? AND team_role=? AND user_id<>?",
-                        (team_id, new_role, target_id),
-                    ).fetchone()
-                    if exists:
-                        return self.redirect(f"/team?id={team_id}&msg=В команде уже есть {new_role}")
+                others = conn.execute(
+                    "SELECT user_id, team_role FROM team_members WHERE team_id=? AND user_id<>?",
+                    (team_id, target_id),
+                ).fetchall()
+                for unique_role in UNIQUE_TEAM_ROLES:
+                    if unique_role in split_roles(new_role) and any(unique_role in split_roles(row["team_role"]) for row in others):
+                        return self.redirect(f"/team?id={team_id}&msg=В команде уже есть {unique_role}")
                 conn.execute("UPDATE team_members SET team_role = ? WHERE team_id = ? AND user_id = ?", (new_role, team_id, target_id))
-                if new_role == "Капитан":
+                if "Капитан" in split_roles(new_role):
                     conn.execute("UPDATE teams SET captain_id=? WHERE id=?", (target_id, team_id))
         self.redirect(f"/team?id={team_id}&msg=Роль обновлена")
 
@@ -1834,7 +1898,7 @@ def layout(body, title, user, msg=None):
     <title>{esc(title)}</title>
     <link rel="icon" type="image/png" href="/static/matchpoint-logo-mark.png">
     <link rel="apple-touch-icon" href="/static/matchpoint-logo-mark.png">
-    <link rel="stylesheet" href="/static/style.css?v=profiles-teams-1">
+    <link rel="stylesheet" href="/static/style.css?v=profile-gradient-roles-1">
 </head>
 <body>
     <header class="topbar">
@@ -1843,7 +1907,7 @@ def layout(body, title, user, msg=None):
         <div class="auth">{auth}</div>
     </header>
     <main class="container">{flash}{body}</main>
-    <script src="/static/app.js?v=profiles-teams-1"></script>
+    <script src="/static/app.js?v=profile-gradient-roles-1"></script>
 </body>
 </html>"""
 
@@ -2026,27 +2090,41 @@ def profile_role_form(profile):
 
 def profile_edit_form(user):
     color = profile_color(user)
+    color2 = valid_hex(user["profile_color2"] if "profile_color2" in user.keys() else "", "#ff5a00")
+    nick_color = valid_hex(user["nickname_color"] if "nickname_color" in user.keys() else "", color)
+    nick_color2 = valid_hex(user["nickname_color2"] if "nickname_color2" in user.keys() else "", color2)
     avatar_history = profile_media_history(user["id"], "avatar", user["avatar_url"])
     banner_history = profile_media_history(user["id"], "banner", user["banner_url"])
     banner_position = user["banner_position"] or "50% 50%"
     x_pos, y_pos = (banner_position.split(" ", 1) + ["50%"])[:2]
     x_value = re.sub(r"\D", "", x_pos) or "50"
     y_value = re.sub(r"\D", "", y_pos) or "50"
+    banner_src = user["banner_url"] or "/static/arena-bg.gif"
+    profile_checked = "checked" if user["profile_animated"] else ""
+    nick_checked = "checked" if user["nickname_animated"] else ""
     return f"""
     <section class='panel profile-edit'>
         <h1>Редактирование профиля</h1>
         <form method='post' action='/profile/edit' enctype='multipart/form-data' class='form grid-form'>
             <label>Ник<input name='nickname' value='{esc(user['nickname'] or user['login'])}' maxlength='40'></label>
-            <label>Цвет профиля<input type='color' name='profile_color' value='{esc(color)}'></label>
+            <label>Цвет профиля 1<input type='color' name='profile_color' value='{esc(color)}'></label>
+            <label>Цвет профиля 2<input type='color' name='profile_color2' value='{esc(color2)}'></label>
+            <label class='check wide'><input type='checkbox' name='profile_animated' {profile_checked}> Переливание рамок профиля</label>
+            <label>Цвет ника 1<input type='color' name='nickname_color' value='{esc(nick_color)}'></label>
+            <label>Цвет ника 2<input type='color' name='nickname_color2' value='{esc(nick_color2)}'></label>
+            <label class='check wide'><input type='checkbox' name='nickname_animated' {nick_checked}> Переливание ника</label>
             <label class='wide file-drop'>Аватарка GIF/PNG/JPG/WEBP<input type='file' name='avatar' accept='image/gif,image/png,image/jpeg,image/webp' data-preview-target='avatar-preview'><span>Выбрать файл</span></label>
             <img class='upload-preview avatar-preview' data-preview-id='avatar-preview' alt=''>
             <div class='wide'><h3>Последние аватарки</h3>{avatar_history or '<p class="muted">Пока пусто.</p>'}</div>
             <label class='wide file-drop'>Баннер GIF/PNG/JPG/WEBP<input type='file' name='banner' accept='image/gif,image/png,image/jpeg,image/webp' data-preview-target='banner-preview'><span>Выбрать файл</span></label>
             <img class='upload-preview banner-preview' data-preview-id='banner-preview' alt=''>
-            <div class='wide crop-controls'>
+            <div class='wide banner-cropper' data-banner-cropper data-x='{esc(x_value)}' data-y='{esc(y_value)}'>
                 <h3>Фокус баннера</h3>
-                <label>X <input type='range' min='0' max='100' value='{esc(x_value)}' data-banner-x></label>
-                <label>Y <input type='range' min='0' max='100' value='{esc(y_value)}' data-banner-y></label>
+                <div class='crop-stage'>
+                    <img src='{esc(banner_src)}' alt='banner crop preview' data-banner-crop-image>
+                    <div class='crop-frame' data-crop-frame><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+                </div>
+                <p class='note'>Перетащи рамку на ту часть баннера, которая должна быть видна в профиле.</p>
                 <input type='hidden' name='banner_position' value='{esc(banner_position)}' data-banner-position>
             </div>
             <div class='wide'><h3>Последние баннеры</h3>{banner_history or '<p class="muted">Пока пусто.</p>'}</div>
@@ -2385,8 +2463,10 @@ def tournament_form_html(action, t=None):
     status = f"<label>Статус<select name='status'><option {'selected' if t.get('status')=='DRAFT' else ''}>DRAFT</option><option {'selected' if t.get('status')=='ONGOING' else ''}>ONGOING</option><option {'selected' if t.get('status')=='FINISHED' else ''}>FINISHED</option></select></label>" if t else ""
     return f"""
     <section class="panel narrow"><h1>Создание нового турнира</h1>
-    <form method="post" action="{action}" class="form grid-form">
+    <form method="post" action="{action}" enctype="multipart/form-data" class="form grid-form">
         <label class="wide">Название турнира<input name="title" required value="{esc(t.get('title',''))}" placeholder="Например: Матч Поинт Cup CS2 #3"></label>
+        <label class="wide file-drop">Логотип турнира GIF/PNG/JPG/WEBP<input type="file" name="logo" accept="image/gif,image/png,image/jpeg,image/webp" data-preview-target="tournament-logo-preview"><span>Выбрать файл</span></label>
+        <img class="upload-preview avatar-preview" data-preview-id="tournament-logo-preview" alt="">
         <label>Игровая дисциплина<select name="discipline_id" data-discipline-select>{disciplines_options(t.get('discipline_id'))}</select></label>
         <label>Формат<select name="format"><option>BO1</option><option>BO2</option><option>BO3</option><option>BO5</option><option>BO7</option><option>Олимпийская система</option><option>Круговая система</option><option>Группы + плей-офф</option></select></label>
         <label>Максимум команд<input type="number" min="2" name="max_teams" value="{esc(t.get('max_teams',4))}"></label>
@@ -2424,11 +2504,12 @@ def team_form_html(action, team=None):
 
 def tournament_card(t):
     count = t["reg_count"] if "reg_count" in t.keys() else "0"
-    return f"<article class='card'><span class='badge'>{esc(t['discipline'])}</span><h3>{esc(t['title'])}</h3><p>{esc(t['format'])}</p><p>{count}/{t['max_teams']} команд · {esc(t['status'])}</p><a class='btn' href='/tournament?id={t['id']}'>Подробнее</a></article>"
+    logo = f"<img class='card-logo' src='{esc(t['logo_url'])}' alt=''>" if "logo_url" in t.keys() and t["logo_url"] else ""
+    return f"<article class='card tournament-card'>{logo}<span class='badge'>{esc(t['discipline'])}</span><h3>{esc(t['title'])}</h3><p>{esc(t['format'])}</p><p>{count}/{t['max_teams']} команд · {esc(t['status'])}</p><a class='btn' href='/tournament?id={t['id']}'>Подробнее</a></article>"
 
 
 def team_card(team):
-    return f"<div class='team-summary'><h3>{esc(team['name'])} <span class='badge'>{esc(team['tag'])}</span></h3><p><b>Дисциплина:</b> {esc(team['discipline'])}</p><p><b>Владелец:</b> {esc(team['captain'])}</p><p><b>Ваша роль:</b> {esc(team['team_role'])}</p><a class='btn' href='/team?id={team['id']}'>Перейти к команде</a></div>"
+    return f"<div class='team-summary'><h3>{esc(team['name'])} <span class='badge'>{esc(team['tag'])}</span></h3><p><b>Дисциплина:</b> {esc(team['discipline'])}</p><p><b>Владелец:</b> {esc(team['captain'])}</p><p><b>Ваши роли:</b> {esc(roles_text(team['team_role']))}</p><a class='btn' href='/team?id={team['id']}'>Перейти к команде</a></div>"
 
 
 def message_html(m):
@@ -2702,7 +2783,7 @@ def registration_form(t, my_teams, regs):
         return "<p class='muted'>Турнир завершен, регистрация закрыта.</p>"
     registered_ids = {r["team_id"] for r in regs}
     allowed_roles = {"Капитан", "Тренер", "Менеджер"}
-    options = "".join(f"<option value='{team['id']}'>{esc(team['name'])}</option>" for team in my_teams if team["id"] not in registered_ids and team["team_role"] in allowed_roles)
+    options = "".join(f"<option value='{team['id']}'>{esc(team['name'])}</option>" for team in my_teams if team["id"] not in registered_ids and has_team_role(team["team_role"], allowed_roles))
     if not options:
         return "<p class='muted'>Нет доступной команды: регистрацию может отправить владелец, тренер или менеджер.</p><a class='btn' href='/team/new'>Создать команду</a>"
     code = "<input name='private_code' placeholder='Код турнира'>" if t["is_private"] else ""
@@ -2714,7 +2795,7 @@ def tournament_unregister_controls(t, my_teams, regs):
     allowed_roles = {"Капитан", "Тренер", "Менеджер"}
     buttons = []
     for team in my_teams:
-        if team["id"] in registered_ids and team["team_role"] in allowed_roles:
+        if team["id"] in registered_ids and has_team_role(team["team_role"], allowed_roles):
             buttons.append(
                 f"<form method='post' action='/tournament/unregister?id={t['id']}' class='form mini-form'>"
                 f"<input type='hidden' name='team_id' value='{team['id']}'>"
@@ -2724,12 +2805,16 @@ def tournament_unregister_controls(t, my_teams, regs):
 
 
 def member_row(team, member, can_edit):
-    role = esc(member["team_role"])
+    role = esc(roles_text(member["team_role"]))
     form = f"<div class='member-role'><span>Роль</span><b>{role}</b></div>"
     kick = ""
     if can_edit:
-        options = "".join(f"<option {'selected' if member['team_role']==value else ''}>{value}</option>" for value in ["Игрок", "Капитан", "Тренер", "Менеджер", "Запасной"])
-        form = f"<form method='post' action='/team/role' class='role-form'><input type='hidden' name='team_id' value='{team['id']}'><input type='hidden' name='user_id' value='{member['user_id']}'><label>Роль<select name='team_role'>{options}</select></label><button class='btn tiny'>Назначить</button></form>"
+        current = set(split_roles(member["team_role"]))
+        options = "".join(
+            f"<label class='role-chip'><input type='checkbox' name='team_role' value='{value}' {'checked' if value in current else ''}><span>{value}</span></label>"
+            for value in TEAM_ROLES
+        )
+        form = f"<form method='post' action='/team/role' class='role-form multi-role-form'><input type='hidden' name='team_id' value='{team['id']}'><input type='hidden' name='user_id' value='{member['user_id']}'><div class='role-chip-grid'>{options}</div><button class='btn tiny'>Сохранить роли</button></form>"
         if member["user_id"] != team["captain_id"]:
             kick = f"<a class='btn tiny danger-btn' href='/team/kick?id={team['id']}&user_id={member['user_id']}'>Кикнуть</a>"
     avatar = member["avatar_url"] or "/static/matchpoint-logo-mark.png"

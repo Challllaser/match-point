@@ -1331,6 +1331,62 @@ button.primary:hover {
   background: var(--profile-soft);
 }
 
+.profile-page .panel,
+.profile-page .profile-comment,
+.profile-page input,
+.profile-page textarea,
+.profile-page select {
+  border-color: color-mix(in srgb, var(--profile-color) 46%, rgba(255,255,255,.16));
+  box-shadow: 0 0 26px color-mix(in srgb, var(--profile-color) 20%, transparent), var(--shadow);
+}
+
+.profile-flow .panel,
+.profile-flow .profile-comment {
+  animation: profileBorderFlow 5s ease-in-out infinite alternate;
+}
+
+.profile-banner {
+  background:
+    radial-gradient(circle at 18% 30%, var(--profile-soft), transparent 34%),
+    radial-gradient(circle at 78% 20%, color-mix(in srgb, var(--profile-color-2) 24%, transparent), transparent 32%),
+    linear-gradient(135deg, rgba(255,255,255,.11), rgba(255,255,255,.035));
+}
+
+.profile-identity h1 {
+  max-width: 100%;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.04;
+  background: linear-gradient(90deg, var(--nick-color), var(--nick-color-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: 0 0 18px color-mix(in srgb, var(--nick-color) 28%, transparent);
+}
+
+.profile-identity h1.nick-flow {
+  background-size: 220% 100%;
+  animation: nickGradientFlow 3.8s ease-in-out infinite alternate;
+}
+
+@keyframes profileBorderFlow {
+  from {
+    border-color: var(--profile-color);
+    box-shadow: 0 0 26px color-mix(in srgb, var(--profile-color) 26%, transparent), var(--shadow);
+  }
+  to {
+    border-color: var(--profile-color-2);
+    box-shadow: 0 0 32px color-mix(in srgb, var(--profile-color-2) 30%, transparent), var(--shadow);
+  }
+}
+
+@keyframes nickGradientFlow {
+  from { background-position: 0% 50%; }
+  to { background-position: 100% 50%; }
+}
+
 .profile-about {
   min-height: 360px;
 }
@@ -1898,6 +1954,56 @@ button.primary:hover {
   gap: 12px;
 }
 
+.banner-cropper {
+  display: grid;
+  gap: 12px;
+}
+
+.crop-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 6;
+  min-height: 190px;
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.18);
+  background: rgba(255,255,255,.05);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 0 28px rgba(0,229,255,.12);
+}
+
+.crop-stage img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  opacity: .78;
+}
+
+.crop-frame {
+  position: absolute;
+  width: min(72%, 620px);
+  aspect-ratio: 16 / 5;
+  left: 14%;
+  top: 22%;
+  cursor: grab;
+  border: 2px solid rgba(0,255,160,.88);
+  border-radius: 14px;
+  background: rgba(0,0,0,.08);
+  box-shadow: 0 0 0 999px rgba(0,0,0,.38), 0 0 28px rgba(0,255,160,.28);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  touch-action: none;
+}
+
+.crop-frame:active {
+  cursor: grabbing;
+}
+
+.crop-frame span {
+  border: 1px solid rgba(255,255,255,.24);
+}
+
 .choice-pill.discipline-choice {
   position: relative;
   display: flex;
@@ -1946,6 +2052,52 @@ button.primary:hover {
 .reaction-btn:hover {
   border-color: rgba(0,255,160,.48);
   box-shadow: 0 0 16px rgba(0,255,160,.14);
+}
+
+.role-chip-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.role-chip {
+  position: relative;
+}
+
+.role-chip input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+}
+
+.role-chip span {
+  display: inline-flex;
+  padding: 8px 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.16);
+  background: rgba(255,255,255,.06);
+  color: #dfe8ff;
+  cursor: pointer;
+}
+
+.role-chip input:checked + span {
+  color: #061018;
+  border-color: rgba(0,255,160,.8);
+  background: linear-gradient(135deg, #00ffa0, #00e5ff);
+  box-shadow: 0 0 18px rgba(0,255,160,.22);
+}
+
+.multi-role-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.tournament-logo-large {
+  width: 86px;
+  height: 86px;
+  border-radius: 22px;
+  object-fit: cover;
+  border: 1px solid rgba(255,255,255,.2);
+  box-shadow: 0 0 30px rgba(0,229,255,.16);
 }
 
 .profile-comment .reaction-bar {
