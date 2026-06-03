@@ -1359,6 +1359,14 @@ button.primary:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   line-height: 1.04;
+  color: #f7f8ff;
+  display: block;
+}
+
+.profile-identity h1 .nick-text {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: bottom;
   background: linear-gradient(90deg, var(--nick-color), var(--nick-color-2));
   -webkit-background-clip: text;
   background-clip: text;
@@ -1366,9 +1374,22 @@ button.primary:hover {
   text-shadow: 0 0 18px color-mix(in srgb, var(--nick-color) 28%, transparent);
 }
 
-.profile-identity h1.nick-flow {
+.profile-identity h1.nick-flow .nick-text {
   background-size: 220% 100%;
   animation: nickGradientFlow 3.8s ease-in-out infinite alternate;
+}
+
+.profile-identity h1.nick-marquee {
+  position: relative;
+}
+
+.profile-identity h1.nick-marquee .nick-text {
+  min-width: max-content;
+  animation: nickMarquee 7s ease-in-out infinite alternate;
+}
+
+.profile-identity h1.nick-marquee.nick-flow .nick-text {
+  animation: nickMarquee 7s ease-in-out infinite alternate, nickGradientFlow 3.8s ease-in-out infinite alternate;
 }
 
 @keyframes profileBorderFlow {
@@ -1385,6 +1406,11 @@ button.primary:hover {
 @keyframes nickGradientFlow {
   from { background-position: 0% 50%; }
   to { background-position: 100% 50%; }
+}
+
+@keyframes nickMarquee {
+  0%, 18% { transform: translateX(0); }
+  82%, 100% { transform: translateX(-28%); }
 }
 
 .profile-about {
@@ -1891,6 +1917,13 @@ button.primary:hover {
   gap: 10px;
 }
 
+.file-drop strong {
+  color: #f7f8ff;
+  font-size: 15px;
+  letter-spacing: .01em;
+  text-shadow: 0 0 16px rgba(0,229,255,.18);
+}
+
 .file-drop input[type="file"] {
   position: absolute;
   inset: 0;
@@ -1959,6 +1992,13 @@ button.primary:hover {
   gap: 12px;
 }
 
+.crop-panel {
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(0,229,255,.22);
+  background: rgba(255,255,255,.055);
+}
+
 .crop-stage {
   position: relative;
   width: 100%;
@@ -1979,6 +2019,17 @@ button.primary:hover {
   opacity: .78;
 }
 
+.avatar-stage {
+  max-width: 360px;
+  aspect-ratio: 1;
+  min-height: 260px;
+  border-radius: 50%;
+}
+
+.avatar-stage img {
+  object-fit: cover;
+}
+
 .crop-frame {
   position: absolute;
   width: min(72%, 620px);
@@ -1996,12 +2047,38 @@ button.primary:hover {
   touch-action: none;
 }
 
+.avatar-frame {
+  width: 62%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+}
+
 .crop-frame:active {
   cursor: grabbing;
 }
 
 .crop-frame span {
   border: 1px solid rgba(255,255,255,.24);
+}
+
+.bbcode-hint {
+  margin: 0;
+  color: rgba(224,230,255,.78);
+  font-size: 12px;
+}
+
+.profile-about a,
+.profile-comment a {
+  color: #00e5ff;
+}
+
+.profile-about blockquote,
+.profile-comment blockquote {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--profile-color, #00e5ff);
+  background: rgba(255,255,255,.06);
+  border-radius: 10px;
 }
 
 .choice-pill.discipline-choice {

@@ -94,6 +94,24 @@ def esc(value):
     return html.escape("" if value is None else str(value), quote=True)
 
 
+def render_bbcode(value):
+    text = esc(value or "")
+    replacements = [
+        (r"\[b\](.*?)\[/b\]", r"<strong>\1</strong>"),
+        (r"\[i\](.*?)\[/i\]", r"<em>\1</em>"),
+        (r"\[u\](.*?)\[/u\]", r"<u>\1</u>"),
+        (r"\[s\](.*?)\[/s\]", r"<s>\1</s>"),
+        (r"\[quote\](.*?)\[/quote\]", r"<blockquote>\1</blockquote>"),
+        (r"\[code\](.*?)\[/code\]", r"<code>\1</code>"),
+        (r"\[color=(#[0-9a-fA-F]{6})\](.*?)\[/color\]", r"<span style=\"color:\1\">\2</span>"),
+        (r"\[url=(https?://[^\]\s]+)\](.*?)\[/url\]", r"<a href=\"\1\" target=\"_blank\" rel=\"noopener noreferrer\">\2</a>"),
+        (r"\[url\](https?://[^\]\s]+)\[/url\]", r"<a href=\"\1\" target=\"_blank\" rel=\"noopener noreferrer\">\1</a>"),
+    ]
+    for pattern, repl in replacements:
+        text = re.sub(pattern, repl, text, flags=re.I | re.S)
+    return text.replace("\n", "<br>")
+
+
 def hash_password(password, salt=None):
     salt = salt or secrets.token_hex(12)
     digest = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
@@ -379,6 +397,7 @@ def init_db():
         ensure_column(conn, "messages", "emoji", "TEXT")
         ensure_column(conn, "users", "nickname", "TEXT")
         ensure_column(conn, "users", "avatar_url", "TEXT")
+        ensure_column(conn, "users", "avatar_position", "TEXT")
         ensure_column(conn, "users", "banner_url", "TEXT")
         ensure_column(conn, "users", "banner_position", "TEXT")
         ensure_column(conn, "users", "profile_color", "TEXT")
@@ -670,8 +689,12 @@ class App(BaseHTTPRequestHandler):
     def home(self):
         discipline_filter = self.query.get("discipline_id", "")
         with db() as conn:
-            params = (discipline_filter,) if discipline_filter else ()
-            filter_sql = "WHERE t.discipline_id=?" if discipline_filter else ""
+            where_clauses = ["t.status != 'FINISHED'"]
+            params = []
+            if discipline_filter:
+                where_clauses.append("t.discipline_id=?")
+                params.append(discipline_filter)
+            filter_sql = "WHERE " + " AND ".join(where_clauses)
             tournaments = conn.execute(
                 """
                 SELECT t.*, d.tag discipline, d.map_images FROM tournaments t
@@ -679,7 +702,7 @@ class App(BaseHTTPRequestHandler):
                 {filter_sql}
                 ORDER BY t.start_date IS NULL, t.start_date, t.id DESC LIMIT 6
                 """.format(filter_sql=filter_sql),
-                params,
+                tuple(params),
             ).fetchall()
             top_teams = rating_teams(conn, discipline_filter)
             top_players = rating_players(conn, discipline_filter)
@@ -741,7 +764,7 @@ class App(BaseHTTPRequestHandler):
                         (token, user["id"], now(), now()),
                     )
                 self.send_response(303)
-                self.send_header("Location", safe_location("/dashboard?msg=Успешный вход в систему"))
+                self.send_header("Location", safe_location("/?msg=Успешный вход в систему"))
                 self.send_header("Set-Cookie", f"session={token}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax")
                 self.end_headers()
                 return
@@ -790,7 +813,7 @@ class App(BaseHTTPRequestHandler):
                 return self.redirect("/password?msg=Новые пароли не совпадают или слишком короткие")
             with db() as conn:
                 conn.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(data["new_password"]), user["id"]))
-            return self.redirect("/dashboard?msg=Пароль обновлен")
+            return self.redirect("/?msg=Пароль обновлен")
         self.send_html(
             """
             <section class='auth-card'><h1>Смена пароля</h1>
@@ -808,6 +831,7 @@ class App(BaseHTTPRequestHandler):
         user = self.require_user()
         if not user:
             return
+        return self.redirect("/")
         with db() as conn:
             team = conn.execute(
                 """
@@ -884,6 +908,7 @@ class App(BaseHTTPRequestHandler):
         is_self = viewer and viewer["id"] == profile["id"]
         can_moderate = is_self or is_staff(viewer)
         avatar = profile["avatar_url"] or "/static/matchpoint-logo-mark.png"
+        avatar_pos = profile["avatar_position"] or "50% 50%"
         banner = profile["banner_url"] or ""
         color = profile_color(profile)
         color2 = valid_hex(profile["profile_color2"] if "profile_color2" in profile.keys() else "", "#ff5a00")
@@ -900,27 +925,30 @@ class App(BaseHTTPRequestHandler):
         comment_form = f"""
         <form method='post' action='/profile/comment?id={profile['id']}' class='form profile-comment-form'>
             <input name='body' maxlength='500' placeholder='Написать комментарий...' required>
+            <p class='bbcode-hint'>BB-code: [b]жирный[/b] [i]курсив[/i] [url=https://...]ссылка[/url]</p>
             <button class='btn primary'>Отправить</button>
         </form>
         """ if viewer else "<a class='btn' href='/login'>Войти, чтобы комментировать</a>"
         trophy_html = "".join(trophy_card(t) for t in trophies) or "<p class='muted'>Трофеи появятся после турниров.</p>"
         banner_pos = profile["banner_position"] or "50% 50%"
         banner_media = f"<img class='profile-banner-media' src='{esc(banner)}' alt='banner' style='object-position:{esc(banner_pos)}'>" if banner else ""
-        name_size = nickname_font_size(display_name(profile))
+        display = display_name(profile)
+        name_size = nickname_font_size(display)
+        marquee = "nick-marquee" if len(display) > 14 else ""
         self.send_html(
             f"""
             <section class='profile-page {profile_anim}' style='{profile_style}'>
                 <div class='profile-banner'>{banner_media}</div>
                 <div class='profile-main'>
                     <aside class='profile-identity panel'>
-                        <img class='profile-avatar' src='{esc(avatar)}' alt='avatar'>
-                        <h1 class='{nick_anim}' style='font-size:{name_size}px'>{tag}{esc(display_name(profile))}</h1>
+                        <img class='profile-avatar' src='{esc(avatar)}' alt='avatar' style='object-position:{esc(avatar_pos)}'>
+                        <h1 class='{nick_anim} {marquee}' style='font-size:{name_size}px'>{tag}<span class='nick-text'>{esc(display)}</span></h1>
                         <div class='profile-badges'><span class='badge'>{esc(profile['role'])}</span>{custom}</div>
                         {edit}{role_form}
                     </aside>
                     <section class='profile-about panel'>
                         <h2>Обо мне</h2>
-                        <p>{esc(profile['about']) if profile['about'] else 'Пользователь пока ничего не рассказал о себе.'}</p>
+                        <p>{render_bbcode(profile['about']) if profile['about'] else 'Пользователь пока ничего не рассказал о себе.'}</p>
                     </section>
                     <aside class='profile-trophies panel'>
                         <h2>Трофеи</h2>
@@ -953,6 +981,9 @@ class App(BaseHTTPRequestHandler):
             selected_banner = data.get("selected_banner") or ""
             avatar_url = save_profile_upload(files.get("avatar"), user["id"], "avatar") or selected_avatar or user["avatar_url"]
             banner_url = save_profile_upload(files.get("banner"), user["id"], "banner") or selected_banner or user["banner_url"]
+            avatar_position = data.get("avatar_position", "50% 50%")
+            if not re.fullmatch(r"(0|[1-9][0-9]?|100)% (0|[1-9][0-9]?|100)%", avatar_position):
+                avatar_position = user["avatar_position"] or "50% 50%"
             banner_position = data.get("banner_position", "50% 50%")
             if not re.fullmatch(r"(0|[1-9][0-9]?|100)% (0|[1-9][0-9]?|100)%", banner_position):
                 banner_position = user["banner_position"] or "50% 50%"
@@ -960,8 +991,8 @@ class App(BaseHTTPRequestHandler):
             remember_profile_media(user["id"], "banner", banner_url)
             with db() as conn:
                 conn.execute(
-                    "UPDATE users SET nickname=?, profile_color=?, profile_color2=?, profile_animated=?, nickname_color=?, nickname_color2=?, nickname_animated=?, about=?, avatar_url=?, banner_url=?, banner_position=? WHERE id=?",
-                    (nickname, color, color2, profile_animated, nick_color, nick_color2, nickname_animated, about, avatar_url, banner_url, banner_position, user["id"]),
+                    "UPDATE users SET nickname=?, profile_color=?, profile_color2=?, profile_animated=?, nickname_color=?, nickname_color2=?, nickname_animated=?, about=?, avatar_url=?, avatar_position=?, banner_url=?, banner_position=? WHERE id=?",
+                    (nickname, color, color2, profile_animated, nick_color, nick_color2, nickname_animated, about, avatar_url, avatar_position, banner_url, banner_position, user["id"]),
                 )
             return self.redirect(f"/profile?id={user['id']}&msg=Профиль обновлен")
         self.send_html(profile_edit_form(user), "Редактирование профиля")
@@ -1018,7 +1049,7 @@ class App(BaseHTTPRequestHandler):
         if not user:
             return
         profile_id = self.query.get("id")
-        custom_role = self.form().get("custom_role", "").strip()[:32]
+        custom_role = self.form().get("custom_role", "").strip()[:160]
         with db() as conn:
             conn.execute("UPDATE users SET custom_role=? WHERE id=?", (custom_role, profile_id))
         self.redirect(f"/profile?id={profile_id}&msg=Кастомная роль обновлена")
@@ -1552,7 +1583,7 @@ class App(BaseHTTPRequestHandler):
                     (data.get("name"), data.get("tag"), data.get("discipline_id"), user["id"], data.get("description"), join_password_hash, join_key, logo_url, selected_extra_disciplines(data), now()),
                 )
                 conn.execute("INSERT INTO team_members(team_id, user_id, team_role, joined_at) VALUES(?,?,?,?)", (cur.lastrowid, user["id"], "Капитан", now()))
-            return self.redirect("/dashboard?msg=Команда создана")
+            return self.redirect("/team/my?msg=Команда создана")
         self.send_html(team_form_html("/team/new"), "Создание команды")
 
     def team_detail(self):
@@ -1898,7 +1929,7 @@ def layout(body, title, user, msg=None):
     <title>{esc(title)}</title>
     <link rel="icon" type="image/png" href="/static/matchpoint-logo-mark.png">
     <link rel="apple-touch-icon" href="/static/matchpoint-logo-mark.png">
-    <link rel="stylesheet" href="/static/style.css?v=profile-gradient-roles-1">
+    <link rel="stylesheet" href="/static/style.css?v=profile-crop-bbcode-1">
 </head>
 <body>
     <header class="topbar">
@@ -1907,7 +1938,7 @@ def layout(body, title, user, msg=None):
         <div class="auth">{auth}</div>
     </header>
     <main class="container">{flash}{body}</main>
-    <script src="/static/app.js?v=profile-gradient-roles-1"></script>
+    <script src="/static/app.js?v=profile-crop-bbcode-1"></script>
 </body>
 </html>"""
 
@@ -2076,13 +2107,13 @@ def profile_comment_html(comment, can_delete):
     name = esc(comment["nickname"] or comment["login"])
     delete = f"<a class='message-delete comment-delete' href='/profile/comment/delete?id={comment['id']}'>Удалить</a>" if can_delete else ""
     reactions = reaction_bar("comment", comment["id"], f"/profile?id={comment['profile_user_id']}", "comment")
-    return f"<article class='profile-comment'><a href='/profile?id={comment['author_id']}'><img src='{esc(avatar)}' alt=''></a><div><b><a href='/profile?id={comment['author_id']}'>{name}</a></b><time>{esc(comment['created_at'])}</time><p>{esc(comment['body'])}</p>{reactions}</div>{delete}</article>"
+    return f"<article class='profile-comment'><a href='/profile?id={comment['author_id']}'><img src='{esc(avatar)}' alt=''></a><div><b><a href='/profile?id={comment['author_id']}'>{name}</a></b><time>{esc(comment['created_at'])}</time><p>{render_bbcode(comment['body'])}</p>{reactions}</div>{delete}</article>"
 
 
 def profile_role_form(profile):
     return f"""
     <form method='post' action='/profile/role?id={profile['id']}' class='form custom-role-form'>
-        <label>Кастомная роль<input name='custom_role' value='{esc(profile['custom_role'] or '')}' maxlength='32' placeholder='Например: caster'></label>
+        <label>Кастомные роли <span class='hint'>через запятую</span><input name='custom_role' value='{esc(profile['custom_role'] or '')}' maxlength='160' placeholder='Caster, Designer, MVP'></label>
         <button class='btn tiny'>Сохранить роль</button>
     </form>
     """
@@ -2099,7 +2130,12 @@ def profile_edit_form(user):
     x_pos, y_pos = (banner_position.split(" ", 1) + ["50%"])[:2]
     x_value = re.sub(r"\D", "", x_pos) or "50"
     y_value = re.sub(r"\D", "", y_pos) or "50"
+    avatar_position = user["avatar_position"] or "50% 50%"
+    ax_pos, ay_pos = (avatar_position.split(" ", 1) + ["50%"])[:2]
+    ax_value = re.sub(r"\D", "", ax_pos) or "50"
+    ay_value = re.sub(r"\D", "", ay_pos) or "50"
     banner_src = user["banner_url"] or "/static/arena-bg.gif"
+    avatar_src = user["avatar_url"] or "/static/matchpoint-logo-mark.png"
     profile_checked = "checked" if user["profile_animated"] else ""
     nick_checked = "checked" if user["nickname_animated"] else ""
     return f"""
@@ -2113,12 +2149,22 @@ def profile_edit_form(user):
             <label>Цвет ника 1<input type='color' name='nickname_color' value='{esc(nick_color)}'></label>
             <label>Цвет ника 2<input type='color' name='nickname_color2' value='{esc(nick_color2)}'></label>
             <label class='check wide'><input type='checkbox' name='nickname_animated' {nick_checked}> Переливание ника</label>
-            <label class='wide file-drop'>Аватарка GIF/PNG/JPG/WEBP<input type='file' name='avatar' accept='image/gif,image/png,image/jpeg,image/webp' data-preview-target='avatar-preview'><span>Выбрать файл</span></label>
+            <label class='wide file-drop'><strong>Аватарка GIF/PNG/JPG/WEBP</strong><input type='file' name='avatar' accept='image/gif,image/png,image/jpeg,image/webp' data-preview-target='avatar-preview'><span>Выбрать файл</span></label>
             <img class='upload-preview avatar-preview' data-preview-id='avatar-preview' alt=''>
+            <button class='btn wide' type='button' data-crop-open='avatar-cropper'>Настроить область аватарки</button>
+            <div class='wide avatar-cropper crop-panel' id='avatar-cropper' data-avatar-cropper data-x='{esc(ax_value)}' data-y='{esc(ay_value)}' hidden>
+                <h3>Область аватарки</h3>
+                <div class='crop-stage avatar-stage'>
+                    <img src='{esc(avatar_src)}' alt='avatar crop preview' data-avatar-crop-image>
+                    <div class='crop-frame avatar-frame' data-crop-frame><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+                </div>
+                <input type='hidden' name='avatar_position' value='{esc(avatar_position)}' data-avatar-position>
+            </div>
             <div class='wide'><h3>Последние аватарки</h3>{avatar_history or '<p class="muted">Пока пусто.</p>'}</div>
-            <label class='wide file-drop'>Баннер GIF/PNG/JPG/WEBP<input type='file' name='banner' accept='image/gif,image/png,image/jpeg,image/webp' data-preview-target='banner-preview'><span>Выбрать файл</span></label>
+            <label class='wide file-drop'><strong>Баннер GIF/PNG/JPG/WEBP</strong><input type='file' name='banner' accept='image/gif,image/png,image/jpeg,image/webp' data-preview-target='banner-preview'><span>Выбрать файл</span></label>
             <img class='upload-preview banner-preview' data-preview-id='banner-preview' alt=''>
-            <div class='wide banner-cropper' data-banner-cropper data-x='{esc(x_value)}' data-y='{esc(y_value)}'>
+            <button class='btn wide' type='button' data-crop-open='banner-cropper'>Настроить фокус баннера</button>
+            <div class='wide banner-cropper crop-panel' id='banner-cropper' data-banner-cropper data-x='{esc(x_value)}' data-y='{esc(y_value)}' hidden>
                 <h3>Фокус баннера</h3>
                 <div class='crop-stage'>
                     <img src='{esc(banner_src)}' alt='banner crop preview' data-banner-crop-image>
@@ -2129,6 +2175,7 @@ def profile_edit_form(user):
             </div>
             <div class='wide'><h3>Последние баннеры</h3>{banner_history or '<p class="muted">Пока пусто.</p>'}</div>
             <label class='wide'>Обо мне<textarea name='about' maxlength='1200'>{esc(user['about'] or '')}</textarea></label>
+            <p class='bbcode-hint wide'>BB-code: [b]жирный[/b] [i]курсив[/i] [u]подчеркнутый[/u] [url=https://...]ссылка[/url] [color=#00e5ff]цвет[/color]</p>
             <div class='form-actions wide'><a class='btn' href='/profile?id={user['id']}'>Отмена</a><button class='btn primary'>Сохранить профиль</button></div>
         </form>
     </section>
@@ -2166,9 +2213,8 @@ def extra_disciplines_controls(selected_text="", primary=None):
         if primary and str(discipline["id"]) == str(primary):
             continue
         checked = "checked" if str(discipline["id"]) in selected else ""
-        logo = f"<img src='{esc(discipline['logo_url'])}' alt=''>" if "logo_url" in discipline.keys() and discipline["logo_url"] else ""
         controls.append(
-            f"<label class='choice-pill discipline-choice'>{logo}<input type='checkbox' name='extra_disciplines' value='{discipline['id']}' {checked}><span>{esc(discipline['name'])}</span></label>"
+            f"<label class='choice-pill discipline-choice'><input type='checkbox' name='extra_disciplines' value='{discipline['id']}' {checked}><span>{esc(discipline['name'])}</span></label>"
         )
     return "<div class='choice-grid'>" + "".join(controls) + "</div>"
 

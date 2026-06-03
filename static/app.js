@@ -76,21 +76,35 @@ document.querySelectorAll("input[type='file'][data-preview-target]").forEach((in
   input.addEventListener("change", () => {
     const file = input.files?.[0];
     const preview = document.querySelector(`[data-preview-id="${input.dataset.previewTarget}"]`);
-    const cropImage = input.name === "banner" ? document.querySelector("[data-banner-crop-image]") : null;
+    const cropImage = input.name === "banner" ? document.querySelector("[data-banner-crop-image]") : input.name === "avatar" ? document.querySelector("[data-avatar-crop-image]") : null;
+    const panel = input.name === "banner" ? document.querySelector("[data-banner-cropper]") : input.name === "avatar" ? document.querySelector("[data-avatar-cropper]") : null;
     const label = input.closest(".file-drop")?.querySelector("span");
     if (label) label.textContent = file ? file.name : "Выбрать файл";
     if (!preview || !file) return;
     const url = URL.createObjectURL(file);
     preview.src = url;
     if (cropImage) cropImage.src = url;
+    if (panel) {
+      panel.hidden = false;
+      setTimeout(() => window.dispatchEvent(new Event("resize")), 30);
+    }
     preview.classList.add("active");
   });
 });
 
-document.querySelectorAll("[data-banner-cropper]").forEach((cropper) => {
+document.querySelectorAll("[data-crop-open]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const panel = document.getElementById(button.dataset.cropOpen || "");
+    if (!panel) return;
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) setTimeout(() => window.dispatchEvent(new Event("resize")), 30);
+  });
+});
+
+document.querySelectorAll("[data-banner-cropper], [data-avatar-cropper]").forEach((cropper) => {
   const stage = cropper.querySelector(".crop-stage");
   const frame = cropper.querySelector("[data-crop-frame]");
-  const hidden = cropper.querySelector("[data-banner-position]");
+  const hidden = cropper.querySelector("[data-banner-position], [data-avatar-position]");
   if (!stage || !frame || !hidden) return;
   let dragging = false;
   let offsetX = 0;
@@ -134,7 +148,8 @@ document.querySelectorAll("[data-banner-cropper]").forEach((cropper) => {
     dragging = false;
   });
   window.addEventListener("resize", placeFromPercent);
-  requestAnimationFrame(placeFromPercent);
+  if (!cropper.hidden) requestAnimationFrame(placeFromPercent);
+  else requestAnimationFrame(placeFromPercent);
 });
 
 document.querySelectorAll("[data-chat-feed]").forEach((chat) => {
