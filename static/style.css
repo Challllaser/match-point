@@ -953,6 +953,7 @@ button.primary:hover {
   max-height: 620px;
   overflow: hidden;
   position: relative;
+  gap: 14px;
 }
 
 .chat-messages {
@@ -984,24 +985,46 @@ button.primary:hover {
 .chat-shell .message {
   max-width: 100%;
   min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: start;
+  column-gap: 10px;
+  row-gap: 8px;
+  padding: 14px 0;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
 
 .chat-shell .message p,
 .chat-media-link {
+  grid-column: 1 / -1;
+  margin: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.chat-shell .message b,
+.chat-shell .message b a {
+  min-width: 0;
+  color: #f7f8ff;
+  text-decoration: none;
+}
+
+.chat-shell .message time {
+  float: none;
+  white-space: nowrap;
+  font-size: 12px;
+  color: rgba(224,230,255,.68);
 }
 
 .message-delete {
   justify-self: end;
   width: max-content;
   margin-left: auto;
-  padding: 4px 9px;
+  padding: 3px 8px;
   border-radius: 999px;
   color: #ff9da8;
-  font-size: 11px;
+  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: .04em;
   border: 1px solid rgba(255, 99, 132, .26);
@@ -1024,21 +1047,31 @@ button.primary:hover {
   bottom: 0;
   z-index: 2;
   display: grid;
-  gap: 10px;
-  padding-top: 14px;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin-top: 0;
+  padding: 12px 0 0;
   background: linear-gradient(180deg, transparent, rgba(7,9,15,.92) 18%);
 }
 
 .emoji-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 64px;
   display: grid;
-  grid-template-columns: repeat(3, minmax(42px, 1fr));
-  gap: 9px;
-  max-height: 168px;
+  grid-template-columns: repeat(6, minmax(34px, 1fr));
+  gap: 7px;
+  max-height: 132px;
   overflow-y: auto;
-  padding: 10px;
+  padding: 9px;
   border: 1px solid rgba(255,255,255,.12);
-  border-radius: 16px;
-  background: rgba(255,255,255,.055);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.13), rgba(255,255,255,.05)),
+    rgba(10,13,22,.94);
+  backdrop-filter: blur(24px) saturate(170%);
+  box-shadow: 0 18px 50px rgba(0,0,0,.46), 0 0 28px rgba(0,229,255,.12);
   scrollbar-width: none;
 }
 
@@ -1048,12 +1081,14 @@ button.primary:hover {
 
 .emoji-btn {
   min-width: 0;
-  min-height: 42px;
-  padding: 6px;
-  border-radius: 12px;
+  width: 100%;
+  min-height: 36px;
+  padding: 0;
+  border-radius: 10px;
   background: rgba(255,255,255,.07);
   border: 1px solid rgba(255,255,255,.14);
-  font-size: 18px;
+  font-size: 17px;
+  line-height: 1;
 }
 
 .emoji-btn:hover {
@@ -1063,12 +1098,67 @@ button.primary:hover {
 
 .chat-compose {
   display: grid;
-  grid-template-columns: 48px 1fr 48px;
-  gap: 10px;
+  grid-template-columns: 42px minmax(0, 1fr) 46px;
+  gap: 8px;
+  align-items: stretch;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 14px;
+  padding: 6px;
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.10), rgba(255,255,255,.035)),
+    rgba(5,8,14,.84);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.10);
+}
+
+.chat-compose input {
+  min-height: 38px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.chat-compose input:focus {
+  box-shadow: none;
+}
+
+.chat-compose .icon-btn {
+  width: 100%;
+  min-height: 38px;
+  padding: 0;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.055);
+  box-shadow: none;
+  display: grid;
+  place-items: center;
+}
+
+.chat-compose .emoji-toggle {
+  color: #dff7ff;
+}
+
+.chat-compose button:not(.emoji-toggle) {
+  color: #071019;
+  border-color: rgba(0,255,160,.48);
+  background: linear-gradient(135deg, #00ffa0, #00e5ff);
+  text-shadow: none;
+}
+
+.chat-compose .icon-btn:hover {
+  transform: none;
+  box-shadow: 0 0 18px rgba(0,229,255,.16);
 }
 
 .emoji-bar[hidden] {
   display: none;
+}
+
+@media (max-width: 520px) {
+  .emoji-bar {
+    grid-template-columns: repeat(3, minmax(42px, 1fr));
+  }
 }
 
 .table-wrap td form {
