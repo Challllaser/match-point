@@ -6,6 +6,7 @@ from email.message import Message
 import hashlib
 import html
 import io
+import mimetypes
 import os
 import re
 import secrets
@@ -118,6 +119,17 @@ def verify_team_secret(entered, stored):
     if is_hashed_secret(stored):
         return check_password(entered, stored)
     return entered == stored
+
+
+def display_name(user):
+    if not user:
+        return ""
+    return (user["nickname"] or user["login"]) if "nickname" in user.keys() else user["login"]
+
+
+def profile_color(user):
+    value = user["profile_color"] if user and "profile_color" in user.keys() else ""
+    return value if re.fullmatch(r"#[0-9a-fA-F]{6}", value or "") else "#00e5ff"
 
 
 def is_staff(user):
@@ -307,6 +319,33 @@ def init_db():
         ensure_column(conn, "veto_actions", "match_id", "INTEGER")
         ensure_column(conn, "messages", "media_url", "TEXT")
         ensure_column(conn, "messages", "emoji", "TEXT")
+        ensure_column(conn, "users", "nickname", "TEXT")
+        ensure_column(conn, "users", "avatar_url", "TEXT")
+        ensure_column(conn, "users", "banner_url", "TEXT")
+        ensure_column(conn, "users", "profile_color", "TEXT")
+        ensure_column(conn, "users", "about", "TEXT")
+        ensure_column(conn, "users", "custom_role", "TEXT")
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS profile_comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_user_id INTEGER NOT NULL,
+                author_id INTEGER NOT NULL,
+                body TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (profile_user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS profile_trophies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                tournament_name TEXT NOT NULL,
+                place INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            """
+        )
         admin = conn.execute("SELECT id FROM users WHERE login = 'admin'").fetchone()
         if not admin:
             conn.execute(
@@ -360,6 +399,37 @@ class App(BaseHTTPRequestHandler):
         for key, values in parsed.items():
             data[f"{key}[]"] = values
         return data
+
+    def multipart_form(self):
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in content_type:
+            return self.form(), {}
+        boundary_match = re.search(r"boundary=(.+)", content_type)
+        if not boundary_match:
+            return {}, {}
+        boundary = boundary_match.group(1).strip('"').encode("utf-8")
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length) if length else b""
+        fields, files = {}, {}
+        for part in raw.split(b"--" + boundary):
+            part = part.strip(b"\r\n")
+            if not part or part == b"--" or b"\r\n\r\n" not in part:
+                continue
+            header_blob, body = part.split(b"\r\n\r\n", 1)
+            body = body.rstrip(b"\r\n")
+            headers = header_blob.decode("utf-8", "ignore")
+            name_match = re.search(r'name="([^"]+)"', headers)
+            if not name_match:
+                continue
+            name = name_match.group(1)
+            filename_match = re.search(r'filename="([^"]*)"', headers)
+            if filename_match:
+                filename = os.path.basename(filename_match.group(1))
+                if filename and body:
+                    files[name] = {"filename": filename, "content": body}
+            else:
+                fields[name] = body.decode("utf-8", "ignore")
+        return fields, files
 
     def current_user(self):
         cookie = SimpleCookie(self.headers.get("Cookie", ""))
@@ -455,6 +525,11 @@ class App(BaseHTTPRequestHandler):
             "/admin/status": self.admin_status,
             "/admin/role": self.admin_role,
             "/password": self.change_password,
+            "/profile": self.profile,
+            "/profile/edit": self.profile_edit,
+            "/profile/comment": self.profile_comment,
+            "/profile/comment/delete": self.profile_comment_delete,
+            "/profile/role": self.profile_role,
             "/tournament/delete": self.tournament_delete,
         }
         handler = routes.get(path)
@@ -474,8 +549,14 @@ class App(BaseHTTPRequestHandler):
             content_type = "text/css"
         elif name.endswith(".gif"):
             content_type = "image/gif"
+        elif name.endswith(".png"):
+            content_type = "image/png"
+        elif name.endswith((".jpg", ".jpeg")):
+            content_type = "image/jpeg"
+        elif name.endswith(".webp"):
+            content_type = "image/webp"
         else:
-            content_type = "application/javascript"
+            content_type = "application/javascript" if name.endswith(".js") else (mimetypes.guess_type(name)[0] or "application/octet-stream")
         with open(file_path, "rb") as f:
             data = f.read()
         self.send_response(200)
@@ -501,7 +582,7 @@ class App(BaseHTTPRequestHandler):
             top_teams = rating_teams(conn, discipline_filter)
             top_players = rating_players(conn, discipline_filter)
             global_messages = conn.execute(
-                "SELECT * FROM (SELECT gm.*, u.login FROM global_messages gm JOIN users u ON u.id=gm.user_id ORDER BY gm.id DESC LIMIT 40) ORDER BY id"
+                "SELECT * FROM (SELECT gm.*, u.login, u.nickname FROM global_messages gm JOIN users u ON u.id=gm.user_id ORDER BY gm.id DESC LIMIT 40) ORDER BY id"
             ).fetchall()
         cards = "".join(tournament_card(t) for t in tournaments) or "<p class='muted'>Пока нет турниров. Создайте первый.</p>"
         teams_html = "".join(f"<a class='rank-row' href='/team?id={t['id']}'><b>{esc(t['name'])}</b><span>{esc(t['discipline'])} · {t['points']} очков</span></a>" for t in top_teams) or "<p class='muted'>Команд пока нет.</p>"
@@ -669,6 +750,147 @@ class App(BaseHTTPRequestHandler):
             "Личный кабинет",
         )
 
+    def profile(self):
+        user_id = self.query.get("id")
+        viewer = self.current_user()
+        if not user_id and viewer:
+            user_id = str(viewer["id"])
+        if not user_id:
+            return self.redirect("/login?msg=Сначала войдите в систему")
+        with db() as conn:
+            profile = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+            team = conn.execute(
+                """
+                SELECT t.id, t.name, t.tag, tm.team_role
+                FROM team_members tm JOIN teams t ON t.id=tm.team_id
+                WHERE tm.user_id=? LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+            comments = conn.execute(
+                """
+                SELECT pc.*, u.login, u.nickname, u.avatar_url
+                FROM profile_comments pc JOIN users u ON u.id=pc.author_id
+                WHERE pc.profile_user_id=? ORDER BY pc.id DESC LIMIT 40
+                """,
+                (user_id,),
+            ).fetchall()
+            trophies = list(conn.execute("SELECT * FROM profile_trophies WHERE user_id=? ORDER BY place, id DESC", (user_id,)).fetchall())
+            trophies.extend(
+                conn.execute(
+                    """
+                    SELECT DISTINCT t.title tournament_name, 1 place, t.created_at
+                    FROM matches m
+                    JOIN tournaments t ON t.id=m.tournament_id
+                    JOIN team_members tm ON tm.team_id=m.winner_id
+                    WHERE tm.user_id=? AND t.status='FINISHED' AND m.winner_id IS NOT NULL
+                    ORDER BY t.id DESC
+                    """,
+                    (user_id,),
+                ).fetchall()
+            )
+        if not profile:
+            return self.redirect("/?msg=Профиль не найден")
+        is_self = viewer and viewer["id"] == profile["id"]
+        can_moderate = is_self or is_staff(viewer)
+        avatar = profile["avatar_url"] or "/static/matchpoint-logo-mark.png"
+        banner = profile["banner_url"] or ""
+        color = profile_color(profile)
+        tag = f"<a class='profile-team-tag' href='/team?id={team['id']}'>[{esc(team['tag'])}]</a>" if team else ""
+        edit = f"<a class='btn primary' href='/profile/edit'>Редактировать профиль</a>" if is_self else ""
+        custom = f"<span class='profile-custom-role'>{esc(profile['custom_role'])}</span>" if profile["custom_role"] else ""
+        role_form = profile_role_form(profile) if is_staff(viewer) else ""
+        comments_html = "".join(profile_comment_html(c, can_moderate or (viewer and viewer["id"] == c["author_id"])) for c in comments) or "<p class='muted'>Комментариев пока нет.</p>"
+        comment_form = f"""
+        <form method='post' action='/profile/comment?id={profile['id']}' class='form profile-comment-form'>
+            <input name='body' maxlength='500' placeholder='Написать комментарий...' required>
+            <button class='btn primary'>Отправить</button>
+        </form>
+        """ if viewer else "<a class='btn' href='/login'>Войти, чтобы комментировать</a>"
+        trophy_html = "".join(trophy_card(t) for t in trophies) or "<p class='muted'>Трофеи появятся после турниров.</p>"
+        banner_style = f"background-image: linear-gradient(135deg, rgba(0,0,0,.18), rgba(0,0,0,.34)), url('{esc(banner)}');" if banner else ""
+        self.send_html(
+            f"""
+            <section class='profile-page' style='--profile-color:{esc(color)}'>
+                <div class='profile-banner' style="{banner_style}"><span>Banner</span></div>
+                <div class='profile-main'>
+                    <aside class='profile-identity panel'>
+                        <img class='profile-avatar' src='{esc(avatar)}' alt='avatar'>
+                        <h1>{tag}{esc(display_name(profile))}</h1>
+                        <div class='profile-badges'><span class='badge'>{esc(profile['role'])}</span>{custom}</div>
+                        {edit}{role_form}
+                    </aside>
+                    <section class='profile-about panel'>
+                        <h2>Обо мне</h2>
+                        <p>{esc(profile['about']) if profile['about'] else 'Пользователь пока ничего не рассказал о себе.'}</p>
+                    </section>
+                    <aside class='profile-trophies panel'>
+                        <h2>Трофеи</h2>
+                        {trophy_html}
+                    </aside>
+                </div>
+                <section class='panel profile-comments'><h2>Комментарии</h2>{comment_form}<div class='comments-list'>{comments_html}</div></section>
+            </section>
+            """,
+            f"Профиль {display_name(profile)}",
+        )
+
+    def profile_edit(self):
+        user = self.require_user()
+        if not user:
+            return
+        if self.command == "POST":
+            data, files = self.multipart_form()
+            nickname = data.get("nickname", "").strip()[:40]
+            color = data.get("profile_color", "#00e5ff").strip()
+            if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+                color = "#00e5ff"
+            about = data.get("about", "").strip()[:1200]
+            avatar_url = save_profile_upload(files.get("avatar"), user["id"], "avatar") or user["avatar_url"]
+            banner_url = save_profile_upload(files.get("banner"), user["id"], "banner") or user["banner_url"]
+            with db() as conn:
+                conn.execute(
+                    "UPDATE users SET nickname=?, profile_color=?, about=?, avatar_url=?, banner_url=? WHERE id=?",
+                    (nickname, color, about, avatar_url, banner_url, user["id"]),
+                )
+            return self.redirect(f"/profile?id={user['id']}&msg=Профиль обновлен")
+        self.send_html(profile_edit_form(user), "Редактирование профиля")
+
+    def profile_comment(self):
+        user = self.require_user()
+        if not user:
+            return
+        profile_id = self.query.get("id")
+        body = self.form().get("body", "").strip()[:500]
+        if body:
+            with db() as conn:
+                conn.execute("INSERT INTO profile_comments(profile_user_id, author_id, body, created_at) VALUES(?,?,?,?)", (profile_id, user["id"], body, now()))
+        self.redirect(f"/profile?id={profile_id}")
+
+    def profile_comment_delete(self):
+        user = self.require_user()
+        if not user:
+            return
+        comment_id = self.query.get("id")
+        with db() as conn:
+            comment = conn.execute("SELECT * FROM profile_comments WHERE id=?", (comment_id,)).fetchone()
+            if not comment:
+                return self.redirect("/?msg=Комментарий не найден")
+            if user["id"] not in (comment["profile_user_id"], comment["author_id"]) and not is_staff(user):
+                return self.redirect(f"/profile?id={comment['profile_user_id']}&msg=Нет прав")
+            conn.execute("DELETE FROM profile_comments WHERE id=?", (comment_id,))
+        self.redirect(f"/profile?id={comment['profile_user_id']}")
+
+    def profile_role(self):
+        user = self.require_admin()
+        if not user:
+            return
+        profile_id = self.query.get("id")
+        custom_role = self.form().get("custom_role", "").strip()[:32]
+        with db() as conn:
+            conn.execute("UPDATE users SET custom_role=? WHERE id=?", (custom_role, profile_id))
+        self.redirect(f"/profile?id={profile_id}&msg=Кастомная роль обновлена")
+
     def tournaments(self):
         with db() as conn:
             items = conn.execute(
@@ -760,7 +982,7 @@ class App(BaseHTTPRequestHandler):
                 (tid,),
             ).fetchall()
             messages = conn.execute(
-                "SELECT * FROM (SELECT m.*, u.login FROM messages m JOIN users u ON u.id = m.user_id WHERE tournament_id = ? ORDER BY m.id DESC LIMIT 40) ORDER BY id",
+                "SELECT * FROM (SELECT m.*, u.login, u.nickname FROM messages m JOIN users u ON u.id = m.user_id WHERE tournament_id = ? ORDER BY m.id DESC LIMIT 40) ORDER BY id",
                 (tid,),
             ).fetchall()
             my_teams = []
@@ -862,6 +1084,10 @@ class App(BaseHTTPRequestHandler):
         if body or media_url or emoji:
             with db() as conn:
                 conn.execute("INSERT INTO messages(tournament_id, user_id, body, media_url, emoji, created_at) VALUES(?,?,?,?,?,?)", (tid, user["id"], body, media_url, emoji, now()))
+        if self.headers.get("X-Requested-With") == "fetch":
+            self.send_response(204)
+            self.end_headers()
+            return
         self.redirect(f"/tournament?id={tid}")
 
     def tournament_messages(self):
@@ -869,7 +1095,7 @@ class App(BaseHTTPRequestHandler):
         user = self.current_user()
         with db() as conn:
             messages = conn.execute(
-                "SELECT * FROM (SELECT m.*, u.login FROM messages m JOIN users u ON u.id=m.user_id WHERE m.tournament_id=? ORDER BY m.id DESC LIMIT 40) ORDER BY id",
+                "SELECT * FROM (SELECT m.*, u.login, u.nickname FROM messages m JOIN users u ON u.id=m.user_id WHERE m.tournament_id=? ORDER BY m.id DESC LIMIT 40) ORDER BY id",
                 (tid,),
             ).fetchall()
         html_body = "".join(message_html(m, user, "tournament", f"/tournament?id={tid}") for m in messages) or "<p class='muted'>В чате пока тихо.</p>"
@@ -886,13 +1112,17 @@ class App(BaseHTTPRequestHandler):
         if body or media_url or emoji:
             with db() as conn:
                 conn.execute("INSERT INTO global_messages(user_id, body, media_url, emoji, created_at) VALUES(?,?,?,?,?)", (user["id"], body, media_url, emoji, now()))
+        if self.headers.get("X-Requested-With") == "fetch":
+            self.send_response(204)
+            self.end_headers()
+            return
         self.redirect("/")
 
     def global_feed(self):
         user = self.current_user()
         with db() as conn:
             messages = conn.execute(
-                "SELECT * FROM (SELECT gm.*, u.login FROM global_messages gm JOIN users u ON u.id=gm.user_id ORDER BY gm.id DESC LIMIT 40) ORDER BY id"
+                "SELECT * FROM (SELECT gm.*, u.login, u.nickname FROM global_messages gm JOIN users u ON u.id=gm.user_id ORDER BY gm.id DESC LIMIT 40) ORDER BY id"
             ).fetchall()
         html_body = "".join(message_html(m, user, "global", "/") for m in messages) or "<p class='muted'>В общем чате пока пусто.</p>"
         self.send_fragment(html_body)
@@ -1385,7 +1615,7 @@ class App(BaseHTTPRequestHandler):
             if u["id"] != user["id"]:
                 action = f"<a class='danger' href='/admin/delete?type=user&id={u['id']}'>Удалить</a>"
             action = admin_user_actions(user, u)
-            rows += f"<tr><td>{u['id']}</td><td>{esc(u['login'])}</td><td>{esc(u['full_name']) or '-'}</td><td><span class='badge'>{esc(u['role'])}</span></td><td>{esc(u['created_at'])}</td><td>{action}</td></tr>"
+            rows += f"<tr><td>{u['id']}</td><td><a href='/profile?id={u['id']}'>{esc(u['login'])}</a></td><td>{esc(u['full_name']) or '-'}</td><td><span class='badge'>{esc(u['role'])}</span></td><td>{esc(u['created_at'])}</td><td>{action}</td></tr>"
         self.send_html(f"<section class='section-head'><h1>Управление пользователями</h1><a class='btn' href='/admin'>Назад</a></section>{table(['ID','Логин','ФИО','Роль','Дата регистрации','Действия'], rows)}<p class='note'>Удаление пользователя также очищает связанные членства в командах.</p>", "Пользователи")
 
     def admin_teams(self):
@@ -1474,7 +1704,7 @@ class App(BaseHTTPRequestHandler):
 
 
 def layout(body, title, user, msg=None):
-    auth = f"<a href='/dashboard'>{esc(user['login'])}</a><a href='/password'>Пароль</a><a href='/logout'>Выйти</a>" if user else "<a href='/login'>Войти</a><a href='/register'>Регистрация</a>"
+    auth = f"<a href='/profile?id={user['id']}'>{esc(display_name(user))}</a><a href='/password'>Пароль</a><a href='/logout'>Выйти</a>" if user else "<a href='/login'>Войти</a><a href='/register'>Регистрация</a>"
     admin = "<a href='/admin'>Админ</a>" if is_staff(user) else ""
     flash = f"<div class='flash'>{esc(msg)}<button data-close>×</button></div>" if msg else ""
     return f"""<!doctype html>
@@ -1499,6 +1729,66 @@ def layout(body, title, user, msg=None):
 
 def safe_location(location):
     return quote(location, safe="/:?&=%#[]@!$'()*+,;")
+
+
+def save_profile_upload(file_info, user_id, kind):
+    if not file_info:
+        return ""
+    ext = os.path.splitext(file_info["filename"])[1].lower()
+    if ext not in (".gif", ".png", ".jpg", ".jpeg", ".webp"):
+        return ""
+    if len(file_info["content"]) > 4 * 1024 * 1024:
+        return ""
+    name = f"profile_{user_id}_{kind}{ext}"
+    path = os.path.join(ROOT, "static", name)
+    with open(path, "wb") as f:
+        f.write(file_info["content"])
+    return f"/static/{name}"
+
+
+def trophy_card(trophy):
+    place = int(trophy["place"])
+    styles = {
+        1: ("diamond", "💎"),
+        2: ("gold", "🏆"),
+        3: ("silver", "🥈"),
+        4: ("bronze", "🥉"),
+    }
+    tone, icon = styles.get(place, ("bronze", "🏅"))
+    return f"<div class='trophy-card {tone}'><div><b>{esc(trophy['tournament_name'])}</b><span>{place} место</span></div><strong>{icon}</strong></div>"
+
+
+def profile_comment_html(comment, can_delete):
+    avatar = comment["avatar_url"] or "/static/matchpoint-logo-mark.png"
+    name = esc(comment["nickname"] or comment["login"])
+    delete = f"<a class='message-delete' href='/profile/comment/delete?id={comment['id']}'>Удалить</a>" if can_delete else ""
+    return f"<article class='profile-comment'><img src='{esc(avatar)}' alt=''><div><b>{name}</b><time>{esc(comment['created_at'])}</time><p>{esc(comment['body'])}</p></div>{delete}</article>"
+
+
+def profile_role_form(profile):
+    return f"""
+    <form method='post' action='/profile/role?id={profile['id']}' class='form custom-role-form'>
+        <label>Кастомная роль<input name='custom_role' value='{esc(profile['custom_role'] or '')}' maxlength='32' placeholder='Например: caster'></label>
+        <button class='btn tiny'>Сохранить роль</button>
+    </form>
+    """
+
+
+def profile_edit_form(user):
+    color = profile_color(user)
+    return f"""
+    <section class='panel profile-edit'>
+        <h1>Редактирование профиля</h1>
+        <form method='post' action='/profile/edit' enctype='multipart/form-data' class='form grid-form'>
+            <label>Ник<input name='nickname' value='{esc(user['nickname'] or user['login'])}' maxlength='40'></label>
+            <label>Цвет профиля<input type='color' name='profile_color' value='{esc(color)}'></label>
+            <label class='wide'>Аватарка GIF/PNG/JPG/WEBP<input type='file' name='avatar' accept='image/gif,image/png,image/jpeg,image/webp'></label>
+            <label class='wide'>Баннер GIF/PNG/JPG/WEBP<input type='file' name='banner' accept='image/gif,image/png,image/jpeg,image/webp'></label>
+            <label class='wide'>Обо мне<textarea name='about' maxlength='1200'>{esc(user['about'] or '')}</textarea></label>
+            <div class='form-actions wide'><a class='btn' href='/profile?id={user['id']}'>Отмена</a><button class='btn primary'>Сохранить профиль</button></div>
+        </form>
+    </section>
+    """
 
 
 def auth_form(title, action, button, include_name):
@@ -1833,7 +2123,8 @@ def message_html(m, user=None, scope="tournament", back="/"):
     can_delete = user and (is_staff(user) or m["user_id"] == user["id"])
     back_url = quote(back, safe="/:")
     delete = f"<a class='message-delete' href='/message/delete?scope={esc(scope)}&id={m['id']}&back={esc(back_url)}'>Удалить</a>" if can_delete else ""
-    return f"<div class='message' data-message-id='{m['id']}'><b>{esc(m['login'])}</b><time>{esc(m['created_at'])}</time>{delete}<p>{emoji} {esc(body)}</p>{media}</div>"
+    author = esc(m["nickname"] or m["login"]) if "nickname" in m.keys() else esc(m["login"])
+    return f"<div class='message' data-message-id='{m['id']}'><b><a href='/profile?id={m['user_id']}'>{author}</a></b><time>{esc(m['created_at'])}</time>{delete}<p>{emoji} {esc(body)}</p>{media}</div>"
 
 
 EMOJI_POOL = ["🔥", "💀", "🏆", "😎", "❤️", "😂", "👍", "😡", "👀", "⚡", "🎯", "🥶", "🤝", "🚀", "💪", "🤯", "🎮", "✅"]
@@ -1841,7 +2132,7 @@ EMOJI_POOL = ["🔥", "💀", "🏆", "😎", "❤️", "😂", "👍", "😡", 
 
 def emoji_buttons():
     buttons = "".join(f"<button type='button' class='emoji-btn' data-emoji='{esc(item)}'>{esc(item)}</button>" for item in EMOJI_POOL)
-    return f"<div class='emoji-bar'>{buttons}</div>"
+    return f"<div class='emoji-bar' data-emoji-panel hidden>{buttons}</div>"
 
 
 def tournament_chat_form(tid):
@@ -1849,7 +2140,7 @@ def tournament_chat_form(tid):
     <form class="chat-form rich-chat" method="post" action="/tournament/message?id={tid}" data-chat-form>
         <input type="hidden" name="emoji" data-emoji-input>
         {emoji_buttons()}
-        <div class="chat-compose"><input name="body" placeholder="Сообщение, ссылка на фото или GIF..."><button class="icon-btn">➤</button></div>
+        <div class="chat-compose"><button type="button" class="icon-btn emoji-toggle" data-emoji-toggle>☺</button><input name="body" placeholder="Сообщение, ссылка на фото или GIF..."><button class="icon-btn">➤</button></div>
     </form>
     """
 
@@ -1859,7 +2150,7 @@ def global_chat_form():
     <form class="chat-form rich-chat" method="post" action="/chat/global" data-chat-form>
         <input type="hidden" name="emoji" data-emoji-input>
         {emoji_buttons()}
-        <div class="chat-compose"><input name="body" placeholder="Общий чат, ссылка на фото или GIF..."><button class="icon-btn">➤</button></div>
+        <div class="chat-compose"><button type="button" class="icon-btn emoji-toggle" data-emoji-toggle>☺</button><input name="body" placeholder="Общий чат, ссылка на фото или GIF..."><button class="icon-btn">➤</button></div>
     </form>
     """
 

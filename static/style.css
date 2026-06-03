@@ -1063,8 +1063,12 @@ button.primary:hover {
 
 .chat-compose {
   display: grid;
-  grid-template-columns: 1fr 48px;
+  grid-template-columns: 48px 1fr 48px;
   gap: 10px;
+}
+
+.emoji-bar[hidden] {
+  display: none;
 }
 
 .table-wrap td form {
@@ -1134,6 +1138,179 @@ button.primary:hover {
 .chat-emoji {
   font-size: 20px;
   filter: drop-shadow(0 0 12px rgba(0,255,160,.35));
+}
+
+.profile-page {
+  display: grid;
+  gap: 24px;
+}
+
+.profile-banner {
+  min-height: clamp(220px, 28vw, 360px);
+  display: grid;
+  place-items: center;
+  border-radius: 24px;
+  border: 1px solid color-mix(in srgb, var(--profile-color) 42%, rgba(255,255,255,.16));
+  background:
+    radial-gradient(circle at 18% 30%, color-mix(in srgb, var(--profile-color) 28%, transparent), transparent 34%),
+    linear-gradient(135deg, rgba(255,255,255,.11), rgba(255,255,255,.035));
+  background-size: cover;
+  background-position: center;
+  box-shadow: 0 0 54px color-mix(in srgb, var(--profile-color) 24%, transparent), var(--shadow);
+  overflow: hidden;
+}
+
+.profile-banner span {
+  color: rgba(255,255,255,.58);
+  font: 900 clamp(26px, 4vw, 58px)/1 "Unbounded", sans-serif;
+  text-transform: uppercase;
+}
+
+.profile-main {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr) 360px;
+  gap: 24px;
+  align-items: start;
+}
+
+.profile-identity {
+  margin-top: -90px;
+  position: relative;
+  z-index: 2;
+  display: grid;
+  gap: 14px;
+  justify-items: start;
+}
+
+.profile-avatar {
+  width: 190px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 3px solid color-mix(in srgb, var(--profile-color) 68%, white);
+  box-shadow: 0 0 40px color-mix(in srgb, var(--profile-color) 38%, transparent), 0 18px 60px rgba(0,0,0,.45);
+  background: rgba(255,255,255,.08);
+}
+
+.profile-identity h1 {
+  margin: 0;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: clamp(28px, 4vw, 46px);
+}
+
+.profile-team-tag {
+  font-size: .62em;
+  color: var(--profile-color);
+  text-shadow: 0 0 18px color-mix(in srgb, var(--profile-color) 42%, transparent);
+}
+
+.profile-badges {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.profile-custom-role {
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--profile-color) 45%, rgba(255,255,255,.2));
+  background: color-mix(in srgb, var(--profile-color) 15%, rgba(255,255,255,.06));
+}
+
+.profile-about {
+  min-height: 360px;
+}
+
+.profile-about p,
+.profile-comment p {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.profile-trophies {
+  display: grid;
+  gap: 12px;
+}
+
+.trophy-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 16px;
+  align-items: center;
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.065);
+}
+
+.trophy-card b,
+.trophy-card span {
+  display: block;
+}
+
+.trophy-card strong {
+  font-size: 34px;
+  filter: drop-shadow(0 0 16px rgba(255,255,255,.24));
+}
+
+.trophy-card.diamond { box-shadow: inset 0 0 24px rgba(0,229,255,.12); }
+.trophy-card.gold { box-shadow: inset 0 0 24px rgba(255,215,90,.14); }
+.trophy-card.silver { box-shadow: inset 0 0 24px rgba(220,235,255,.12); }
+.trophy-card.bronze { box-shadow: inset 0 0 24px rgba(205,127,50,.14); }
+
+.profile-comment-form {
+  grid-template-columns: 1fr auto;
+  display: grid;
+  margin-bottom: 18px;
+}
+
+.comments-list {
+  display: grid;
+  gap: 12px;
+}
+
+.profile-comment {
+  display: grid;
+  grid-template-columns: 46px 1fr auto;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.05);
+}
+
+.profile-comment img {
+  width: 46px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.profile-comment time {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.profile-edit input[type="file"] {
+  padding: 12px;
+}
+
+.custom-role-form {
+  width: 100%;
+}
+
+@media (max-width: 980px) {
+  .profile-main {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-identity {
+    margin-top: -70px;
+  }
 }
 
 .olympic-bracket {

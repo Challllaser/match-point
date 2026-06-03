@@ -78,6 +78,8 @@ document.querySelectorAll("[data-chat-feed]").forEach((chat) => {
   const form = chat.querySelector("[data-chat-form]");
   const input = form?.querySelector("input[name='body']");
   const emojiInput = form?.querySelector("[data-emoji-input]");
+  const emojiPanel = form?.querySelector("[data-emoji-panel]");
+  const emojiToggle = form?.querySelector("[data-emoji-toggle]");
 
   async function refreshChat(keepPosition = false) {
     if (!feedUrl || !messages) return;
@@ -98,9 +100,10 @@ document.querySelectorAll("[data-chat-feed]").forEach((chat) => {
     const data = new FormData(form);
     if (!String(data.get("body") || "").trim() && !String(data.get("emoji") || "").trim()) return;
     try {
-      await fetch(form.action, { method: "POST", body: data });
+      await fetch(form.action, { method: "POST", body: data, headers: { "X-Requested-With": "fetch" } });
       form.reset();
       if (emojiInput) emojiInput.value = "";
+      if (emojiPanel) emojiPanel.hidden = true;
       await refreshChat();
     } catch (_) {
       form.submit();
@@ -110,8 +113,13 @@ document.querySelectorAll("[data-chat-feed]").forEach((chat) => {
   form?.querySelectorAll("[data-emoji]").forEach((button) => {
     button.addEventListener("click", () => {
       if (emojiInput) emojiInput.value = button.dataset.emoji || "";
+      if (emojiPanel) emojiPanel.hidden = true;
       form.requestSubmit();
     });
+  });
+
+  emojiToggle?.addEventListener("click", () => {
+    if (emojiPanel) emojiPanel.hidden = !emojiPanel.hidden;
   });
 
   input?.addEventListener("keydown", (event) => {
