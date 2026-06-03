@@ -1727,7 +1727,7 @@ def layout(body, title, user, msg=None):
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{esc(title)}</title>
-    <link rel="stylesheet" href="/static/style.css?v=media-chat-fix-3">
+    <link rel="stylesheet" href="/static/style.css?v=media-chat-fix-4">
 </head>
 <body>
     <header class="topbar">
@@ -1736,7 +1736,7 @@ def layout(body, title, user, msg=None):
         <div class="auth">{auth}</div>
     </header>
     <main class="container">{flash}{body}</main>
-    <script src="/static/app.js?v=media-chat-fix-3"></script>
+    <script src="/static/app.js?v=media-chat-fix-4"></script>
 </body>
 </html>"""
 

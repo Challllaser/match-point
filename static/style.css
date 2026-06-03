@@ -1077,7 +1077,7 @@ button.primary:hover {
   right: 0;
   bottom: 64px;
   display: grid;
-  grid-template-columns: repeat(6, minmax(34px, 1fr));
+  grid-template-columns: repeat(3, minmax(54px, 1fr));
   gap: 7px;
   max-height: 132px;
   overflow-y: auto;
