@@ -95,23 +95,10 @@ document.querySelectorAll("[data-chat-feed]").forEach((chat) => {
     } catch (_) {}
   }
 
-  form?.addEventListener("submit", async (event) => {
-    event.preventDefault();
+  form?.addEventListener("submit", (event) => {
     const data = new FormData(form);
-    if (!String(data.get("body") || "").trim() && !String(data.get("emoji") || "").trim()) return;
-    try {
-      const response = await fetch(form.action, { method: "POST", body: data, headers: { "X-Requested-With": "fetch" } });
-      if (response.redirected) {
-        window.location.href = response.url;
-        return;
-      }
-      if (!response.ok && response.status !== 204) throw new Error("chat post failed");
-      form.reset();
-      if (emojiInput) emojiInput.value = "";
-      if (emojiPanel) emojiPanel.hidden = true;
-      await refreshChat();
-    } catch (_) {
-      form.submit();
+    if (!String(data.get("body") || "").trim() && !String(data.get("emoji") || "").trim()) {
+      event.preventDefault();
     }
   });
 

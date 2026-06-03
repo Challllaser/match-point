@@ -986,7 +986,7 @@ button.primary:hover {
   max-width: 100%;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: 36px minmax(0, 1fr) auto auto;
   align-items: start;
   column-gap: 10px;
   row-gap: 8px;
@@ -997,7 +997,7 @@ button.primary:hover {
 
 .chat-shell .message p,
 .chat-media-link {
-  grid-column: 1 / -1;
+  grid-column: 2 / -1;
   margin: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -1008,6 +1008,23 @@ button.primary:hover {
   min-width: 0;
   color: #f7f8ff;
   text-decoration: none;
+}
+
+.chat-avatar {
+  grid-row: 1 / span 2;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.18);
+  box-shadow: 0 0 14px rgba(0,229,255,.14);
+}
+
+.chat-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .chat-shell .message time {
@@ -1250,10 +1267,12 @@ button.primary:hover {
   overflow: hidden;
 }
 
-.profile-banner span {
-  color: rgba(255,255,255,.58);
-  font: 900 clamp(26px, 4vw, 58px)/1 "Unbounded", sans-serif;
-  text-transform: uppercase;
+.profile-banner-media {
+  width: 100%;
+  height: 100%;
+  min-height: inherit;
+  object-fit: cover;
+  display: block;
 }
 
 .profile-main {
@@ -1389,6 +1408,48 @@ button.primary:hover {
 
 .profile-edit input[type="file"] {
   padding: 12px;
+}
+
+.media-history {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(72px, 1fr));
+  gap: 10px;
+}
+
+.media-choice {
+  display: block;
+  position: relative;
+  cursor: pointer;
+}
+
+.media-choice input {
+  position: absolute;
+  inset: 8px auto auto 8px;
+  width: 18px;
+  min-height: 18px;
+  z-index: 2;
+}
+
+.media-choice img {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.14);
+}
+
+.team-hero {
+  position: relative;
+}
+
+.team-logo-large {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,.18);
+  box-shadow: 0 0 28px rgba(0,229,255,.16);
+  margin-bottom: 14px;
 }
 
 .custom-role-form {
