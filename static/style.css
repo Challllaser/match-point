@@ -1761,3 +1761,244 @@ button.primary:hover {
 .bracket-round:not(:last-of-type)::before {
   right: -42px;
 }
+
+.rank-row.with-media {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.rank-row.with-media img,
+.member-avatar img,
+.discipline-logo {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid rgba(255,255,255,.22);
+  box-shadow: 0 0 16px rgba(0,229,255,.16);
+}
+
+.card-logo {
+  width: 58px;
+  height: 58px;
+  border-radius: 16px;
+  object-fit: cover;
+  float: right;
+  border: 1px solid rgba(255,255,255,.18);
+  box-shadow: 0 0 22px rgba(0,229,255,.14);
+}
+
+.rank-row.with-media b,
+.member-nick b,
+.profile-identity h1 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.rank-row.with-media span {
+  white-space: nowrap;
+}
+
+.member {
+  grid-template-columns: 44px minmax(0, 1fr) minmax(190px, .9fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.member-avatar {
+  display: inline-flex;
+}
+
+.role-form {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.role-form label,
+.custom-role-form input {
+  min-width: 0;
+}
+
+.custom-role-form {
+  max-width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.file-drop {
+  position: relative;
+  display: grid;
+  gap: 10px;
+}
+
+.file-drop input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.file-drop span {
+  display: inline-flex;
+  width: max-content;
+  max-width: 100%;
+  align-items: center;
+  justify-content: center;
+  padding: 11px 16px;
+  border-radius: 14px;
+  color: #eafcff;
+  border: 1px solid rgba(0,229,255,.34);
+  background: linear-gradient(135deg, rgba(255,255,255,.12), rgba(255,255,255,.04));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.16), 0 0 24px rgba(0,229,255,.12);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-drop:hover span {
+  border-color: rgba(0,255,160,.62);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.20), 0 0 28px rgba(0,255,160,.18);
+}
+
+.upload-preview {
+  display: none;
+  max-width: 100%;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,.18);
+  object-fit: cover;
+  box-shadow: 0 0 28px rgba(0,229,255,.12);
+}
+
+.upload-preview.active {
+  display: block;
+}
+
+.avatar-preview {
+  width: 128px;
+  height: 128px;
+  border-radius: 50%;
+}
+
+.banner-preview {
+  width: 100%;
+  height: 180px;
+}
+
+.map-preview {
+  width: 180px;
+  height: 96px;
+}
+
+.crop-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.choice-pill.discipline-choice {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,.14);
+  background: rgba(255,255,255,.06);
+  cursor: pointer;
+}
+
+.choice-pill.discipline-choice input {
+  width: 0;
+  height: 0;
+  opacity: 0;
+  position: absolute;
+}
+
+.choice-pill.discipline-choice:has(input:checked) {
+  border-color: rgba(0,255,160,.68);
+  box-shadow: 0 0 24px rgba(0,255,160,.16);
+}
+
+.reaction-bar {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.reaction-bar form {
+  margin: 0;
+}
+
+.reaction-btn {
+  min-height: 28px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.16);
+  background: rgba(255,255,255,.06);
+  color: #f7f8ff;
+  cursor: pointer;
+}
+
+.reaction-btn:hover {
+  border-color: rgba(0,255,160,.48);
+  box-shadow: 0 0 16px rgba(0,255,160,.14);
+}
+
+.profile-comment .reaction-bar {
+  grid-column: auto;
+  margin-top: 8px;
+}
+
+.profile-comment b a {
+  color: #f7f8ff;
+  text-decoration: none;
+}
+
+.comment-delete {
+  align-self: start;
+  height: auto;
+  line-height: 1.2;
+}
+
+.map-upload-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.map-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 10px;
+}
+
+.veto-player {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.veto-player img {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+@media (max-width: 760px) {
+  .member,
+  .role-form,
+  .custom-role-form,
+  .rank-row.with-media {
+    grid-template-columns: 1fr;
+  }
+
+  .crop-controls {
+    grid-template-columns: 1fr;
+  }
+}

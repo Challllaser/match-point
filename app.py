@@ -6,6 +6,7 @@ from email.message import Message
 import hashlib
 import html
 import io
+import json
 import mimetypes
 import os
 import re
@@ -323,14 +324,18 @@ def init_db():
         ensure_column(conn, "teams", "join_password", "TEXT")
         ensure_column(conn, "teams", "join_key", "TEXT")
         ensure_column(conn, "teams", "logo_url", "TEXT")
+        ensure_column(conn, "teams", "extra_discipline_ids", "TEXT")
         ensure_column(conn, "disciplines", "map_pool", "TEXT")
         ensure_column(conn, "disciplines", "rule_presets", "TEXT")
+        ensure_column(conn, "disciplines", "logo_url", "TEXT")
+        ensure_column(conn, "disciplines", "map_images", "TEXT")
         ensure_column(conn, "veto_actions", "match_id", "INTEGER")
         ensure_column(conn, "messages", "media_url", "TEXT")
         ensure_column(conn, "messages", "emoji", "TEXT")
         ensure_column(conn, "users", "nickname", "TEXT")
         ensure_column(conn, "users", "avatar_url", "TEXT")
         ensure_column(conn, "users", "banner_url", "TEXT")
+        ensure_column(conn, "users", "banner_position", "TEXT")
         ensure_column(conn, "users", "profile_color", "TEXT")
         ensure_column(conn, "users", "about", "TEXT")
         ensure_column(conn, "users", "custom_role", "TEXT")
@@ -359,6 +364,26 @@ def init_db():
                 kind TEXT NOT NULL,
                 url TEXT NOT NULL,
                 created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS message_reactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope TEXT NOT NULL,
+                message_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                emoji TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(scope, message_id, user_id, emoji),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS comment_reactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                comment_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                emoji TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(comment_id, user_id, emoji),
+                FOREIGN KEY (comment_id) REFERENCES profile_comments(id) ON DELETE CASCADE,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
             """
@@ -445,7 +470,14 @@ class App(BaseHTTPRequestHandler):
                 if filename and body:
                     files[name] = {"filename": filename, "content": body}
             else:
-                fields[name] = body.decode("utf-8", "ignore")
+                value = body.decode("utf-8", "ignore")
+                if name in fields:
+                    existing = fields.get(f"{name}[]", [fields[name]])
+                    existing.append(value)
+                    fields[f"{name}[]"] = existing
+                else:
+                    fields[name] = value
+                    fields[f"{name}[]"] = [value]
         return fields, files
 
     def current_user(self):
@@ -520,6 +552,7 @@ class App(BaseHTTPRequestHandler):
             "/chat/global": self.global_message,
             "/chat/global/feed": self.global_feed,
             "/message/delete": self.message_delete,
+            "/message/react": self.message_react,
             "/match/score": self.match_score,
             "/bracket": self.bracket,
             "/veto": self.veto,
@@ -546,6 +579,7 @@ class App(BaseHTTPRequestHandler):
             "/profile/edit": self.profile_edit,
             "/profile/comment": self.profile_comment,
             "/profile/comment/delete": self.profile_comment_delete,
+            "/profile/comment/react": self.profile_comment_react,
             "/profile/role": self.profile_role,
             "/tournament/delete": self.tournament_delete,
         }
@@ -590,7 +624,7 @@ class App(BaseHTTPRequestHandler):
             filter_sql = "WHERE t.discipline_id=?" if discipline_filter else ""
             tournaments = conn.execute(
                 """
-                SELECT t.*, d.tag discipline FROM tournaments t
+                SELECT t.*, d.tag discipline, d.map_images FROM tournaments t
                 LEFT JOIN disciplines d ON d.id = t.discipline_id
                 {filter_sql}
                 ORDER BY t.start_date IS NULL, t.start_date, t.id DESC LIMIT 6
@@ -603,8 +637,8 @@ class App(BaseHTTPRequestHandler):
                 "SELECT * FROM (SELECT gm.*, u.login, u.nickname, u.avatar_url FROM global_messages gm JOIN users u ON u.id=gm.user_id ORDER BY gm.id DESC LIMIT 40) ORDER BY id"
             ).fetchall()
         cards = "".join(tournament_card(t) for t in tournaments) or "<p class='muted'>Пока нет турниров. Создайте первый.</p>"
-        teams_html = "".join(f"<a class='rank-row' href='/team?id={t['id']}'><b>{esc(t['name'])}</b><span>{esc(t['discipline'])} · {t['points']} очков</span></a>" for t in top_teams) or "<p class='muted'>Команд пока нет.</p>"
-        players_html = "".join(f"<div class='rank-row'><b>{esc(p['login'])}</b><span>{p['points']} очков</span></div>" for p in top_players)
+        teams_html = "".join(rank_team_row(t) for t in top_teams) or "<p class='muted'>Команд пока нет.</p>"
+        players_html = "".join(rank_player_row(p) for p in top_players)
         user = self.current_user()
         global_chat = "".join(message_html(m, user, "global", "/") for m in global_messages) or "<p class='muted'>В общем чате пока пусто.</p>"
         chat_form = global_chat_form() if user else "<a class='btn primary' href='/login'>Войти в общий чат</a>"
@@ -815,7 +849,8 @@ class App(BaseHTTPRequestHandler):
         </form>
         """ if viewer else "<a class='btn' href='/login'>Войти, чтобы комментировать</a>"
         trophy_html = "".join(trophy_card(t) for t in trophies) or "<p class='muted'>Трофеи появятся после турниров.</p>"
-        banner_media = f"<img class='profile-banner-media' src='{esc(banner)}' alt='banner'>" if banner else ""
+        banner_pos = profile["banner_position"] or "50% 50%"
+        banner_media = f"<img class='profile-banner-media' src='{esc(banner)}' alt='banner' style='object-position:{esc(banner_pos)}'>" if banner else ""
         self.send_html(
             f"""
             <section class='profile-page' style='{profile_style}'>
@@ -857,12 +892,15 @@ class App(BaseHTTPRequestHandler):
             selected_banner = data.get("selected_banner") or ""
             avatar_url = save_profile_upload(files.get("avatar"), user["id"], "avatar") or selected_avatar or user["avatar_url"]
             banner_url = save_profile_upload(files.get("banner"), user["id"], "banner") or selected_banner or user["banner_url"]
+            banner_position = data.get("banner_position", "50% 50%")
+            if not re.fullmatch(r"(0|[1-9][0-9]?|100)% (0|[1-9][0-9]?|100)%", banner_position):
+                banner_position = user["banner_position"] or "50% 50%"
             remember_profile_media(user["id"], "avatar", avatar_url)
             remember_profile_media(user["id"], "banner", banner_url)
             with db() as conn:
                 conn.execute(
-                    "UPDATE users SET nickname=?, profile_color=?, about=?, avatar_url=?, banner_url=? WHERE id=?",
-                    (nickname, color, about, avatar_url, banner_url, user["id"]),
+                    "UPDATE users SET nickname=?, profile_color=?, about=?, avatar_url=?, banner_url=?, banner_position=? WHERE id=?",
+                    (nickname, color, about, avatar_url, banner_url, banner_position, user["id"]),
                 )
             return self.redirect(f"/profile?id={user['id']}&msg=Профиль обновлен")
         self.send_html(profile_edit_form(user), "Редактирование профиля")
@@ -891,6 +929,28 @@ class App(BaseHTTPRequestHandler):
                 return self.redirect(f"/profile?id={comment['profile_user_id']}&msg=Нет прав")
             conn.execute("DELETE FROM profile_comments WHERE id=?", (comment_id,))
         self.redirect(f"/profile?id={comment['profile_user_id']}")
+
+    def profile_comment_react(self):
+        user = self.require_user()
+        if not user:
+            return
+        comment_id = self.query.get("id")
+        emoji = self.form().get("emoji", "").strip()[:8]
+        back = self.query.get("back", "/")
+        if emoji:
+            with db() as conn:
+                existing = conn.execute(
+                    "SELECT id FROM comment_reactions WHERE comment_id=? AND user_id=? AND emoji=?",
+                    (comment_id, user["id"], emoji),
+                ).fetchone()
+                if existing:
+                    conn.execute("DELETE FROM comment_reactions WHERE id=?", (existing["id"],))
+                else:
+                    conn.execute(
+                        "INSERT INTO comment_reactions(comment_id, user_id, emoji, created_at) VALUES(?,?,?,?)",
+                        (comment_id, user["id"], emoji, now()),
+                    )
+        self.redirect(back)
 
     def profile_role(self):
         user = self.require_admin()
@@ -1033,7 +1093,7 @@ class App(BaseHTTPRequestHandler):
                     <section class="panel"><h2>Участники <span>{len(regs)}/{t['max_teams']}</span></h2><div class="team-list">{participants}</div></section>
                     {chat_panel}
                 </main>
-                <aside class="panel sticky"><h2>Ваша команда</h2>{register_form}{unregister_form}<a class="btn" href="/bracket?id={t['id']}">Сетка и бан-пики</a>{edit}{delete}</aside>
+                <aside class="panel sticky"><h2>Ваша команда</h2>{register_form}{unregister_form}<a class="btn" href="/bracket?id={t['id']}">Турнирная сетка</a><a class="btn primary" href="/veto?id={t['id']}">Бан/пик</a>{edit}{delete}</aside>
             </div>
             """,
             esc(t["title"]),
@@ -1153,6 +1213,31 @@ class App(BaseHTTPRequestHandler):
             if msg["user_id"] != user["id"] and not is_staff(user):
                 return self.redirect(f"{back}?msg=Недостаточно прав")
             conn.execute(f"DELETE FROM {table_name} WHERE id=?", (message_id,))
+        self.redirect(back)
+
+    def message_react(self):
+        user = self.require_user()
+        if not user:
+            return
+        scope = self.query.get("scope", "global")
+        message_id = self.query.get("id")
+        back = self.query.get("back", "/")
+        emoji = self.form().get("emoji", "").strip()[:8]
+        if scope not in ("global", "tournament"):
+            scope = "global"
+        if emoji:
+            with db() as conn:
+                existing = conn.execute(
+                    "SELECT id FROM message_reactions WHERE scope=? AND message_id=? AND user_id=? AND emoji=?",
+                    (scope, message_id, user["id"], emoji),
+                ).fetchone()
+                if existing:
+                    conn.execute("DELETE FROM message_reactions WHERE id=?", (existing["id"],))
+                else:
+                    conn.execute(
+                        "INSERT INTO message_reactions(scope, message_id, user_id, emoji, created_at) VALUES(?,?,?,?,?)",
+                        (scope, message_id, user["id"], emoji, now()),
+                    )
         self.redirect(back)
 
     def match_score(self):
@@ -1276,7 +1361,7 @@ class App(BaseHTTPRequestHandler):
                 current_captain = conn.execute("SELECT captain_id FROM teams WHERE id=?", (progress.get("team_id"),)).fetchone()
         can_vote = bool(user and not progress.get("complete") and current_captain and current_captain["captain_id"] == user["id"])
         used_by_map = {a["map_name"]: a for a in actions}
-        map_cards = "".join(veto_map_card(tid, match_id, map_name, used_by_map, progress, can_vote) for map_name in split_csv(t["maps"]))
+        map_cards = "".join(veto_map_card(t, tid, match_id, map_name, used_by_map, progress, can_vote) for map_name in split_csv(t["maps"]))
         status_text = progress["message"] if progress.get("complete") else f"Ход: {current_team_name} · {progress.get('action')}"
         self.send_html(
             f"""
@@ -1399,8 +1484,8 @@ class App(BaseHTTPRequestHandler):
             logo_url = save_public_upload(files.get("logo"), f"team_logo_{user['id']}")
             with db() as conn:
                 cur = conn.execute(
-                    "INSERT INTO teams(name, tag, discipline_id, captain_id, description, join_password, join_key, logo_url, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (data.get("name"), data.get("tag"), data.get("discipline_id"), user["id"], data.get("description"), join_password_hash, join_key, logo_url, now()),
+                    "INSERT INTO teams(name, tag, discipline_id, captain_id, description, join_password, join_key, logo_url, extra_discipline_ids, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (data.get("name"), data.get("tag"), data.get("discipline_id"), user["id"], data.get("description"), join_password_hash, join_key, logo_url, selected_extra_disciplines(data), now()),
                 )
                 conn.execute("INSERT INTO team_members(team_id, user_id, team_role, joined_at) VALUES(?,?,?,?)", (cur.lastrowid, user["id"], "Капитан", now()))
             return self.redirect("/dashboard?msg=Команда создана")
@@ -1419,7 +1504,7 @@ class App(BaseHTTPRequestHandler):
                 (team_id,),
             ).fetchone()
             members = conn.execute(
-                "SELECT tm.*, u.login, u.full_name FROM team_members tm JOIN users u ON u.id = tm.user_id WHERE tm.team_id = ?",
+                "SELECT tm.*, u.login, u.nickname, u.full_name, u.avatar_url FROM team_members tm JOIN users u ON u.id = tm.user_id WHERE tm.team_id = ?",
                 (team_id,),
             ).fetchall()
         if not team:
@@ -1435,11 +1520,13 @@ class App(BaseHTTPRequestHandler):
             actions += f"<a class='btn danger-btn' href='/team/delete?id={team_id}'>Расформировать команду</a>"
             actions += f"<p class='note'>Ключ вступления: <b>{esc(team['join_key'] or 'не задан')}</b></p>"
         logo = f"<img class='team-logo-large' src='{esc(team['logo_url'])}' alt='logo'>" if team["logo_url"] else ""
+        extra = team_extra_disciplines(team["extra_discipline_ids"])
+        extra_html = f"<p><b>Дополнительно:</b> {extra}</p>" if extra else ""
         self.send_html(
             f"""
             <div class="grid aside">
                 <section class="panel team-hero">{logo}<h1>{esc(team['name'])} <span class='badge'>{esc(team['tag'])}</span></h1>
-                    <p><b>Дисциплина:</b> {esc(team['discipline_name'])}</p><p><b>Владелец:</b> {esc(team['captain'])}</p>
+                    <p><b>Дисциплина:</b> {esc(team['discipline_name'])}</p>{extra_html}<p><b>Владелец:</b> {esc(team['captain'])}</p>
                     <p><b>Описание:</b> {esc(team['description']) or 'Описание не заполнено.'}</p>
                 </section>
                 <aside class="panel actions-stack"><a class="btn" href="/tournaments">Найти турнир</a>{actions}</aside>
@@ -1579,8 +1666,8 @@ class App(BaseHTTPRequestHandler):
             logo_url = save_public_upload(files.get("logo"), f"team_logo_{team_id}") or team["logo_url"]
             with db() as conn:
                 conn.execute(
-                    "UPDATE teams SET name=?, tag=?, discipline_id=?, description=?, join_password=?, join_key=?, logo_url=? WHERE id=?",
-                    (data.get("name"), data.get("tag"), data.get("discipline_id"), data.get("description"), join_password_value, join_key, logo_url, team_id),
+                    "UPDATE teams SET name=?, tag=?, discipline_id=?, description=?, join_password=?, join_key=?, logo_url=?, extra_discipline_ids=? WHERE id=?",
+                    (data.get("name"), data.get("tag"), data.get("discipline_id"), data.get("description"), join_password_value, join_key, logo_url, selected_extra_disciplines(data), team_id),
                 )
             return self.redirect(f"/team?id={team_id}&msg=Команда обновлена")
         self.send_html(team_form_html(f"/team/edit?id={team_id}", team), "Редактирование команды")
@@ -1604,18 +1691,36 @@ class App(BaseHTTPRequestHandler):
     def admin_disciplines(self):
         if not self.require_admin():
             return
+        edit_id = self.query.get("id")
         if self.command == "POST":
-            data = self.form()
+            data, files = self.multipart_form()
+            old = None
             with db() as conn:
-                conn.execute(
-                    "INSERT INTO disciplines(name, tag, description, map_pool, rule_presets) VALUES(?,?,?,?,?)",
-                    (data.get("name"), data.get("tag"), data.get("description"), data.get("map_pool"), data.get("rule_presets")),
-                )
-            return self.redirect("/admin/disciplines?msg=Дисциплина добавлена")
+                if edit_id:
+                    old = conn.execute("SELECT * FROM disciplines WHERE id=?", (edit_id,)).fetchone()
+                logo_url = save_public_upload(files.get("logo"), f"discipline_logo_{edit_id or 'new'}") or (old["logo_url"] if old else "")
+                map_images = discipline_map_images(data, files, old["map_images"] if old else "")
+                if edit_id and old:
+                    conn.execute(
+                        "UPDATE disciplines SET name=?, tag=?, description=?, map_pool=?, rule_presets=?, logo_url=?, map_images=? WHERE id=?",
+                        (data.get("name"), data.get("tag"), data.get("description"), data.get("map_pool"), data.get("rule_presets"), logo_url, map_images, edit_id),
+                    )
+                    msg = "Дисциплина обновлена"
+                else:
+                    cur = conn.execute(
+                        "INSERT INTO disciplines(name, tag, description, map_pool, rule_presets, logo_url, map_images) VALUES(?,?,?,?,?,?,?)",
+                        (data.get("name"), data.get("tag"), data.get("description"), data.get("map_pool"), data.get("rule_presets"), logo_url, map_images),
+                    )
+                    if logo_url and "new" in logo_url:
+                        pass
+                    msg = "Дисциплина добавлена"
+            return self.redirect(f"/admin/disciplines?msg={quote(msg)}")
         with db() as conn:
             items = conn.execute("SELECT * FROM disciplines ORDER BY id DESC").fetchall()
-        rows = "".join(f"<tr><td>{d['id']}</td><td>{esc(d['name'])}</td><td><span class='badge'>{esc(d['tag'])}</span></td><td>{esc(d['description'])}</td><td><a class='danger' href='/admin/delete?type=discipline&id={d['id']}'>Удалить</a></td></tr>" for d in items)
-        self.send_html(f"<section class='section-head'><h1>Игровые дисциплины</h1><a class='btn' href='/admin'>Назад</a></section><section class='panel'><h2>Добавить новую дисциплину</h2><form method='post' class='form grid-form'><label>Название<input name='name' required></label><label>Короткий тег<input name='tag' required></label><label class='wide'>Описание<textarea name='description'></textarea></label><label class='wide'>Пул карт / режимов<textarea name='map_pool' placeholder='Dust2, Mirage, Inferno'></textarea></label><label class='wide'>Правила<textarea name='rule_presets' placeholder='Одно правило на строку'></textarea></label><button class='btn primary'>Добавить</button></form></section>{table(['ID','Название','Тег','Описание','Действия'], rows)}", "Дисциплины")
+            edit = conn.execute("SELECT * FROM disciplines WHERE id=?", (edit_id,)).fetchone() if edit_id else None
+        rows = "".join(f"<tr><td>{d['id']}</td><td>{discipline_logo(d)} {esc(d['name'])}</td><td><span class='badge'>{esc(d['tag'])}</span></td><td>{esc(d['description'])}</td><td><a class='btn tiny' href='/admin/disciplines?id={d['id']}'>Редактировать</a> <a class='danger' href='/admin/delete?type=discipline&id={d['id']}'>Удалить</a></td></tr>" for d in items)
+        form = discipline_admin_form(edit)
+        self.send_html(f"<section class='section-head'><h1>Игровые дисциплины</h1><a class='btn' href='/admin'>Назад</a></section>{form}{table(['ID','Название','Тег','Описание','Действия'], rows)}", "Дисциплины")
 
     def admin_users(self):
         user = self.require_admin()
@@ -1727,7 +1832,9 @@ def layout(body, title, user, msg=None):
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{esc(title)}</title>
-    <link rel="stylesheet" href="/static/style.css?v=media-chat-fix-4">
+    <link rel="icon" type="image/png" href="/static/matchpoint-logo-mark.png">
+    <link rel="apple-touch-icon" href="/static/matchpoint-logo-mark.png">
+    <link rel="stylesheet" href="/static/style.css?v=profiles-teams-1">
 </head>
 <body>
     <header class="topbar">
@@ -1736,7 +1843,7 @@ def layout(body, title, user, msg=None):
         <div class="auth">{auth}</div>
     </header>
     <main class="container">{flash}{body}</main>
-    <script src="/static/app.js?v=media-chat-fix-4"></script>
+    <script src="/static/app.js?v=profiles-teams-1"></script>
 </body>
 </html>"""
 
@@ -1870,11 +1977,42 @@ def trophy_card(trophy):
     return f"<div class='trophy-card {tone}'><div><b>{esc(trophy['tournament_name'])}</b><span>{place} место</span></div><strong>{icon}</strong></div>"
 
 
+REACTION_EMOJIS = ["🔥", "💀", "🏆", "😂", "❤️", "👍"]
+
+
+def reaction_counts(kind, item_id, scope="global"):
+    table_name = "comment_reactions" if kind == "comment" else "message_reactions"
+    where = "comment_id=?" if kind == "comment" else "scope=? AND message_id=?"
+    params = (item_id,) if kind == "comment" else (scope, item_id)
+    with db() as conn:
+        rows = conn.execute(
+            f"SELECT emoji, COUNT(*) count FROM {table_name} WHERE {where} GROUP BY emoji",
+            params,
+        ).fetchall()
+    return {row["emoji"]: row["count"] for row in rows}
+
+
+def reaction_bar(kind, item_id, back, scope="global"):
+    counts = reaction_counts(kind, item_id, scope)
+    action = "/profile/comment/react" if kind == "comment" else "/message/react"
+    query = f"id={item_id}&back={quote(back, safe='/:?=&')}"
+    if kind != "comment":
+        query += f"&scope={scope}"
+    buttons = []
+    for emoji in REACTION_EMOJIS:
+        count = counts.get(emoji, 0)
+        buttons.append(
+            f"<form method='post' action='{action}?{query}'><input type='hidden' name='emoji' value='{esc(emoji)}'><button class='reaction-btn'>{esc(emoji)}{f' {count}' if count else ''}</button></form>"
+        )
+    return "<div class='reaction-bar'>" + "".join(buttons) + "</div>"
+
+
 def profile_comment_html(comment, can_delete):
     avatar = comment["avatar_url"] or "/static/matchpoint-logo-mark.png"
     name = esc(comment["nickname"] or comment["login"])
-    delete = f"<a class='message-delete' href='/profile/comment/delete?id={comment['id']}'>Удалить</a>" if can_delete else ""
-    return f"<article class='profile-comment'><img src='{esc(avatar)}' alt=''><div><b>{name}</b><time>{esc(comment['created_at'])}</time><p>{esc(comment['body'])}</p></div>{delete}</article>"
+    delete = f"<a class='message-delete comment-delete' href='/profile/comment/delete?id={comment['id']}'>Удалить</a>" if can_delete else ""
+    reactions = reaction_bar("comment", comment["id"], f"/profile?id={comment['profile_user_id']}", "comment")
+    return f"<article class='profile-comment'><a href='/profile?id={comment['author_id']}'><img src='{esc(avatar)}' alt=''></a><div><b><a href='/profile?id={comment['author_id']}'>{name}</a></b><time>{esc(comment['created_at'])}</time><p>{esc(comment['body'])}</p>{reactions}</div>{delete}</article>"
 
 
 def profile_role_form(profile):
@@ -1890,15 +2028,27 @@ def profile_edit_form(user):
     color = profile_color(user)
     avatar_history = profile_media_history(user["id"], "avatar", user["avatar_url"])
     banner_history = profile_media_history(user["id"], "banner", user["banner_url"])
+    banner_position = user["banner_position"] or "50% 50%"
+    x_pos, y_pos = (banner_position.split(" ", 1) + ["50%"])[:2]
+    x_value = re.sub(r"\D", "", x_pos) or "50"
+    y_value = re.sub(r"\D", "", y_pos) or "50"
     return f"""
     <section class='panel profile-edit'>
         <h1>Редактирование профиля</h1>
         <form method='post' action='/profile/edit' enctype='multipart/form-data' class='form grid-form'>
             <label>Ник<input name='nickname' value='{esc(user['nickname'] or user['login'])}' maxlength='40'></label>
             <label>Цвет профиля<input type='color' name='profile_color' value='{esc(color)}'></label>
-            <label class='wide'>Аватарка GIF/PNG/JPG/WEBP<input type='file' name='avatar' accept='image/gif,image/png,image/jpeg,image/webp'></label>
+            <label class='wide file-drop'>Аватарка GIF/PNG/JPG/WEBP<input type='file' name='avatar' accept='image/gif,image/png,image/jpeg,image/webp' data-preview-target='avatar-preview'><span>Выбрать файл</span></label>
+            <img class='upload-preview avatar-preview' data-preview-id='avatar-preview' alt=''>
             <div class='wide'><h3>Последние аватарки</h3>{avatar_history or '<p class="muted">Пока пусто.</p>'}</div>
-            <label class='wide'>Баннер GIF/PNG/JPG/WEBP<input type='file' name='banner' accept='image/gif,image/png,image/jpeg,image/webp'></label>
+            <label class='wide file-drop'>Баннер GIF/PNG/JPG/WEBP<input type='file' name='banner' accept='image/gif,image/png,image/jpeg,image/webp' data-preview-target='banner-preview'><span>Выбрать файл</span></label>
+            <img class='upload-preview banner-preview' data-preview-id='banner-preview' alt=''>
+            <div class='wide crop-controls'>
+                <h3>Фокус баннера</h3>
+                <label>X <input type='range' min='0' max='100' value='{esc(x_value)}' data-banner-x></label>
+                <label>Y <input type='range' min='0' max='100' value='{esc(y_value)}' data-banner-y></label>
+                <input type='hidden' name='banner_position' value='{esc(banner_position)}' data-banner-position>
+            </div>
             <div class='wide'><h3>Последние баннеры</h3>{banner_history or '<p class="muted">Пока пусто.</p>'}</div>
             <label class='wide'>Обо мне<textarea name='about' maxlength='1200'>{esc(user['about'] or '')}</textarea></label>
             <div class='form-actions wide'><a class='btn' href='/profile?id={user['id']}'>Отмена</a><button class='btn primary'>Сохранить профиль</button></div>
@@ -1918,6 +2068,108 @@ def disciplines_options(selected=None):
     with db() as conn:
         items = conn.execute("SELECT * FROM disciplines ORDER BY name").fetchall()
     return "".join(f"<option value='{d['id']}' data-game='{esc(d['tag'].upper())}' {'selected' if str(selected)==str(d['id']) else ''}>{esc(d['name'])}</option>" for d in items)
+
+
+def selected_extra_disciplines(data):
+    values = data.get("extra_disciplines[]", [])
+    clean = []
+    for value in values:
+        if str(value).isdigit() and str(value) not in clean:
+            clean.append(str(value))
+    return ",".join(clean)
+
+
+def extra_disciplines_controls(selected_text="", primary=None):
+    selected = set(split_csv(selected_text))
+    with db() as conn:
+        items = conn.execute("SELECT * FROM disciplines ORDER BY name").fetchall()
+    controls = []
+    for discipline in items:
+        if primary and str(discipline["id"]) == str(primary):
+            continue
+        checked = "checked" if str(discipline["id"]) in selected else ""
+        logo = f"<img src='{esc(discipline['logo_url'])}' alt=''>" if "logo_url" in discipline.keys() and discipline["logo_url"] else ""
+        controls.append(
+            f"<label class='choice-pill discipline-choice'>{logo}<input type='checkbox' name='extra_disciplines' value='{discipline['id']}' {checked}><span>{esc(discipline['name'])}</span></label>"
+        )
+    return "<div class='choice-grid'>" + "".join(controls) + "</div>"
+
+
+def team_extra_disciplines(selected_text=""):
+    ids = [item for item in split_csv(selected_text) if item.isdigit()]
+    if not ids:
+        return ""
+    placeholders = ",".join("?" for _ in ids)
+    with db() as conn:
+        rows = conn.execute(f"SELECT name, tag FROM disciplines WHERE id IN ({placeholders}) ORDER BY name", ids).fetchall()
+    return ", ".join(esc(row["name"] or row["tag"]) for row in rows)
+
+
+def load_json_map(text):
+    try:
+        value = json.loads(text or "{}")
+        return value if isinstance(value, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def discipline_map_images(data, files, old_text=""):
+    images = load_json_map(old_text)
+    for line in (data.get("map_images_text") or "").replace("\r", "").split("\n"):
+        if "=" in line:
+            name, url = line.split("=", 1)
+        elif "|" in line:
+            name, url = line.split("|", 1)
+        else:
+            continue
+        name, url = name.strip(), url.strip()
+        if name and url:
+            images[name] = url
+    for key, file_info in files.items():
+        if not key.startswith("map_image_"):
+            continue
+        idx = key.rsplit("_", 1)[-1]
+        map_name = data.get(f"map_name_{idx}", "").strip()
+        if map_name:
+            url = save_public_upload(file_info, f"map_{map_name.lower().replace(' ', '_')}")
+            if url:
+                images[map_name] = url
+    return json.dumps(images, ensure_ascii=False)
+
+
+def discipline_logo(discipline):
+    if "logo_url" in discipline.keys() and discipline["logo_url"]:
+        return f"<img class='discipline-logo' src='{esc(discipline['logo_url'])}' alt=''>"
+    return ""
+
+
+def discipline_admin_form(edit=None):
+    d = dict(edit) if edit else {}
+    action = f"/admin/disciplines?id={d['id']}" if d.get("id") else "/admin/disciplines"
+    title = "Редактировать дисциплину" if d else "Добавить новую дисциплину"
+    maps = split_csv(d.get("map_pool", ""))
+    image_map = load_json_map(d.get("map_images", ""))
+    image_lines = "\n".join(f"{name}={url}" for name, url in image_map.items())
+    map_uploads = "".join(
+        f"<label class='file-drop map-upload'>{esc(map_name)}<input type='hidden' name='map_name_{idx}' value='{esc(map_name)}'><input type='file' name='map_image_{idx}' accept='image/gif,image/png,image/jpeg,image/webp' data-preview-target='map-preview-{idx}'><span>Фото карты</span></label><img class='upload-preview map-preview' data-preview-id='map-preview-{idx}' alt=''>"
+        for idx, map_name in enumerate(maps)
+    )
+    return f"""
+    <section class='panel'><h2>{title}</h2>
+        <form method='post' action='{action}' enctype='multipart/form-data' class='form grid-form'>
+            <label>Название<input name='name' required value='{esc(d.get('name',''))}'></label>
+            <label>Короткий тег<input name='tag' required value='{esc(d.get('tag',''))}'></label>
+            <label class='wide file-drop'>Логотип игры<input type='file' name='logo' accept='image/gif,image/png,image/jpeg,image/webp' data-preview-target='discipline-logo-preview'><span>Выбрать файл</span></label>
+            <img class='upload-preview avatar-preview' data-preview-id='discipline-logo-preview' alt=''>
+            <label class='wide'>Описание<textarea name='description'>{esc(d.get('description',''))}</textarea></label>
+            <label class='wide'>Пул карт / режимов<textarea name='map_pool' placeholder='Dust2, Mirage, Inferno'>{esc(d.get('map_pool',''))}</textarea></label>
+            <label class='wide'>Правила<textarea name='rule_presets' placeholder='Одно правило на строку'>{esc(d.get('rule_presets',''))}</textarea></label>
+            <label class='wide'>URL фотокарточек карт<textarea name='map_images_text' placeholder='Dust2=https://site/dust2.jpg'>{esc(image_lines)}</textarea></label>
+            <div class='wide map-upload-grid'>{map_uploads or '<p class="muted">Сохраните пул карт, затем откройте редактирование, чтобы загрузить фото под каждую карту.</p>'}</div>
+            <button class='btn primary'>{'Сохранить' if d else 'Добавить'}</button>
+        </form>
+    </section>
+    """
 
 
 def collect_selected_maps(data, discipline_id=None):
@@ -2004,7 +2256,7 @@ def rebuild_bracket_rounds(conn, tournament_id):
 def rating_teams(conn, discipline_id="", limit=5):
     teams = conn.execute(
         """
-        SELECT teams.id, teams.name, d.tag discipline
+        SELECT teams.id, teams.name, teams.logo_url, d.tag discipline
         FROM teams LEFT JOIN disciplines d ON d.id=teams.discipline_id
         {where}
         """.format(where="WHERE teams.discipline_id=?" if discipline_id else ""),
@@ -2030,13 +2282,24 @@ def rating_players(conn, discipline_id=""):
     rows = []
     for row in conn.execute(
         """
-        SELECT u.login, tm.team_id FROM users u
+        SELECT u.id, u.login, u.nickname, u.avatar_url, tm.team_id FROM users u
         JOIN team_members tm ON tm.user_id=u.id
         ORDER BY u.login
         """
     ).fetchall():
-        rows.append({"login": row["login"], "points": team_points.get(row["team_id"], 0)})
+        rows.append({"id": row["id"], "login": row["login"], "nickname": row["nickname"], "avatar_url": row["avatar_url"], "points": team_points.get(row["team_id"], 0)})
     return sorted(rows, key=lambda r: (-r["points"], r["login"]))[:8]
+
+
+def rank_team_row(team):
+    logo = team["logo_url"] or "/static/matchpoint-logo-mark.png"
+    return f"<a class='rank-row with-media' href='/team?id={team['id']}'><img src='{esc(logo)}' alt=''><b>{esc(team['name'])}</b><span>{esc(team['discipline'])} · {team['points']} очков</span></a>"
+
+
+def rank_player_row(player):
+    avatar = player["avatar_url"] or "/static/matchpoint-logo-mark.png"
+    name = esc(player["nickname"] or player["login"])
+    return f"<a class='rank-row with-media' href='/profile?id={player['id']}'><img src='{esc(avatar)}' alt=''><b>{name}</b><span>{player['points']} очков</span></a>"
 
 
 def veto_progress(tournament, match, actions):
@@ -2149,8 +2412,10 @@ def team_form_html(action, team=None):
     <form method="post" action="{action}" enctype="multipart/form-data" class="form grid-form">
         <label>Название команды<input name="name" required value="{esc(team.get('name',''))}"></label>
         <label>Тег<input name="tag" required value="{esc(team.get('tag',''))}"></label>
-        <label class="wide">Дисциплина<select name="discipline_id">{disciplines_options(team.get('discipline_id'))}</select></label>
-        <label class="wide">Логотип команды GIF/PNG/JPG/WEBP<input type="file" name="logo" accept="image/gif,image/png,image/jpeg,image/webp"></label>
+        <label class="wide">Основная дисциплина<select name="discipline_id">{disciplines_options(team.get('discipline_id'))}</select></label>
+        <div class="wide"><h3>Дополнительные дисциплины</h3>{extra_disciplines_controls(team.get('extra_discipline_ids',''), team.get('discipline_id'))}</div>
+        <label class="wide file-drop">Логотип команды GIF/PNG/JPG/WEBP<input type="file" name="logo" accept="image/gif,image/png,image/jpeg,image/webp" data-preview-target="team-logo-preview"><span>Выбрать файл</span></label>
+        <img class="upload-preview avatar-preview" data-preview-id="team-logo-preview" alt="">
         <label class="wide">Описание<textarea name="description">{esc(team.get('description',''))}</textarea></label>
         <label>Пароль для вступления<input name="join_password" value="" placeholder="{password_placeholder}"></label>
         <label>Ключ вступления<input name="join_key" value="{esc(key_value)}" {key_readonly}></label>
@@ -2242,7 +2507,8 @@ def message_html(m, user=None, scope="tournament", back="/"):
     delete = f"<a class='message-delete' href='/message/delete?scope={esc(scope)}&id={m['id']}&back={esc(back_url)}'>Удалить</a>" if can_delete else ""
     author = esc(m["nickname"] or m["login"]) if "nickname" in m.keys() else esc(m["login"])
     avatar = m["avatar_url"] if "avatar_url" in m.keys() and m["avatar_url"] else "/static/matchpoint-logo-mark.png"
-    return f"<div class='message' data-message-id='{m['id']}'><a class='chat-avatar' href='/profile?id={m['user_id']}'><img src='{esc(avatar)}' alt=''></a><b><a href='/profile?id={m['user_id']}'>{author}</a></b><time>{esc(m['created_at'])}</time>{delete}<p>{emoji} {esc(body)}</p>{media}</div>"
+    reactions = reaction_bar("message", m["id"], back, scope)
+    return f"<div class='message' data-message-id='{m['id']}'><a class='chat-avatar' href='/profile?id={m['user_id']}'><img src='{esc(avatar)}' alt=''></a><b><a href='/profile?id={m['user_id']}'>{author}</a></b><time>{esc(m['created_at'])}</time>{delete}<p>{emoji} {esc(body)}</p>{media}{reactions}</div>"
 
 
 EMOJI_POOL = ["🔥", "💀", "🏆", "😎", "❤️", "😂", "👍", "😡", "👀", "⚡", "🎯", "🥶", "🤝", "🚀", "💪", "🤯", "🎮", "✅"]
@@ -2299,6 +2565,8 @@ def render_bracket(t, matches, latest_scores, user):
 def match_card(t, m, score, user):
     winner_class1 = "winner-bless" if m["winner_id"] == m["team1_id"] else ""
     winner_class2 = "winner-bless" if m["winner_id"] == m["team2_id"] else ""
+    picked = match_selected_maps(t, m["id"])
+    picked_text = f"<p class='match-note'><b>Карты:</b> {esc(', '.join(picked))}</p>" if picked else ""
     score_text = f"<p class='match-note'>{esc(score['map_scores'])} · {esc(score['status'])}</p>" if score else ""
     form = match_score_form(m, user)
     return f"""
@@ -2306,8 +2574,9 @@ def match_card(t, m, score, user):
         <div class="match-team {winner_class1}"><b>{esc(m['team1'] or 'Свободный слот')}</b><span>{esc(m['score1'])}</span></div>
         <div class="match-team {winner_class2}"><b>{esc(m['team2'] or 'BYE')}</b><span>{esc(m['score2'])}</span></div>
         <small>Раунд {m['round']}</small>
+        {picked_text}
         {score_text}
-        <a class="btn tiny" href="/veto?id={t['id']}&match_id={m['id']}">Veto</a>
+        <a class="btn tiny primary" href="/veto?id={t['id']}&match_id={m['id']}">Бан/пик</a>
         {form}
     </article>
     """
@@ -2321,12 +2590,11 @@ def match_score_form(m, user):
         options += f"<option value='{m['team1_id']}'>{esc(m['team1'])}</option>"
     if m["team2_id"]:
         options += f"<option value='{m['team2_id']}'>{esc(m['team2'])}</option>"
+    inputs = match_score_inputs(m)
     return f"""
     <details class="score-details"><summary>Счет</summary>
         <form method="post" action="/match/score?match_id={m['id']}" class="score-form">
-            <input name="map1" placeholder="1 карта 11:13">
-            <input name="map2" placeholder="2 карта 13:7">
-            <input name="map3" placeholder="3 карта 4:13">
+            {inputs}
             <select name="winner_id"><option value="">Победитель</option>{options}</select>
             <button class="btn tiny">Сохранить</button>
         </form>
@@ -2334,21 +2602,50 @@ def match_score_form(m, user):
     """
 
 
+def match_selected_maps(tournament, match_id):
+    with db() as conn:
+        actions = conn.execute("SELECT action, map_name FROM veto_actions WHERE match_id=? ORDER BY id", (match_id,)).fetchall()
+    picked = [row["map_name"] for row in actions if row["action"] == "PICK"]
+    used = {row["map_name"] for row in actions}
+    remaining = [name for name in split_csv(tournament["maps"]) if name not in used]
+    target = min(best_of_value(tournament["format"]), len(split_csv(tournament["maps"]))) or 1
+    result = (picked + remaining)[:target]
+    return result
+
+
+def match_score_inputs(match):
+    with db() as conn:
+        t = conn.execute("SELECT * FROM tournaments WHERE id=?", (match["tournament_id"],)).fetchone()
+    maps = match_selected_maps(t, match["id"]) if t else []
+    target = min(best_of_value(t["format"] if t else "BO1"), max(1, len(maps) or 1))
+    if not maps:
+        maps = [f"Карта {idx}" for idx in range(1, target + 1)]
+    return "".join(
+        f"<label>{esc(map_name)}<input name='map{idx}' placeholder='13:11'></label>"
+        for idx, map_name in enumerate(maps[:target], 1)
+    )
+
+
 def team_members_for_veto(conn, team_id):
     if not team_id:
         return []
     return conn.execute(
-        "SELECT tm.team_role, u.login FROM team_members tm JOIN users u ON u.id=tm.user_id WHERE tm.team_id=? ORDER BY tm.team_role='Капитан' DESC, u.login",
+        "SELECT tm.team_role, u.login, u.nickname, u.avatar_url FROM team_members tm JOIN users u ON u.id=tm.user_id WHERE tm.team_id=? ORDER BY tm.team_role='Капитан' DESC, u.login",
         (team_id,),
     ).fetchall()
 
 
 def veto_team_panel(name, members, active):
-    rows = "".join(f"<div class='veto-player {'captain' if m['team_role']=='Капитан' else ''}'><span>{esc(m['login'])}</span><small>{esc(m['team_role'])}</small></div>" for m in members)
+    rows = "".join(f"<div class='veto-player {'captain' if m['team_role']=='Капитан' else ''}'><img src='{esc(m['avatar_url'] or '/static/matchpoint-logo-mark.png')}' alt=''><span>{esc(m['nickname'] or m['login'])}</span><small>{esc(m['team_role'])}</small></div>" for m in members)
     return f"<aside class='veto-team {'active' if active else ''}'><h2>{esc(name)}</h2>{rows}</aside>"
 
 
-def veto_map_card(tid, match_id, map_name, used_by_map, progress, can_vote):
+def map_image_url(tournament, map_name):
+    images = load_json_map(tournament["map_images"] if "map_images" in tournament.keys() else "")
+    return images.get(map_name, "")
+
+
+def veto_map_card(tournament, tid, match_id, map_name, used_by_map, progress, can_vote):
     action = used_by_map.get(map_name)
     cls = ""
     label = ""
@@ -2361,7 +2658,9 @@ def veto_map_card(tid, match_id, map_name, used_by_map, progress, can_vote):
     buttons = ""
     if can_vote and map_name in progress.get("remaining", []):
         buttons = f"<form method='post' action='/veto?id={tid}&match_id={match_id}'><input type='hidden' name='action' value='{esc(progress['action'])}'><input type='hidden' name='map_name' value='{esc(map_name)}'><button class='btn tiny primary'>{esc(progress['action'])}</button></form>"
-    return f"<article class='veto-map {cls}'><div class='map-thumb'>{esc(map_name[:2].upper())}</div><b>{esc(map_name)}</b><span>{label}</span>{buttons}</article>"
+    image = map_image_url(tournament, map_name)
+    thumb = f"<img src='{esc(image)}' alt=''>" if image else esc(map_name[:2].upper())
+    return f"<article class='veto-map {cls}'><div class='map-thumb'>{thumb}</div><b>{esc(map_name)}</b><span>{label}</span>{buttons}</article>"
 
 
 def team_search_card(team, user, my_team):
@@ -2369,7 +2668,8 @@ def team_search_card(team, user, my_team):
     action = f"<a class='btn' href='/team?id={team['id']}'>Открыть</a>"
     if user and not my_team:
         action += join_team_form(team["id"])
-    return f"<article class='card'><span class='badge'>{esc(team['discipline'])}</span><h3>{esc(team['name'])}</h3><p>{esc(team['tag'])} · владелец {esc(team['captain'])}</p><p>{team['members']} участников · {locked}</p>{action}</article>"
+    logo = f"<img class='card-logo' src='{esc(team['logo_url'])}' alt=''>" if team["logo_url"] else ""
+    return f"<article class='card team-card'>{logo}<span class='badge'>{esc(team['discipline'])}</span><h3>{esc(team['name'])}</h3><p>{esc(team['tag'])} · владелец {esc(team['captain'])}</p><p>{team['members']} участников · {locked}</p>{action}</article>"
 
 
 def join_team_form(team_id):
@@ -2432,7 +2732,9 @@ def member_row(team, member, can_edit):
         form = f"<form method='post' action='/team/role' class='role-form'><input type='hidden' name='team_id' value='{team['id']}'><input type='hidden' name='user_id' value='{member['user_id']}'><label>Роль<select name='team_role'>{options}</select></label><button class='btn tiny'>Назначить</button></form>"
         if member["user_id"] != team["captain_id"]:
             kick = f"<a class='btn tiny danger-btn' href='/team/kick?id={team['id']}&user_id={member['user_id']}'>Кикнуть</a>"
-    return f"<div class='member'><div class='member-nick'><span>Ник</span><b><a href='/profile?id={member['user_id']}'>{esc(member['login'])}</a></b></div>{form}{kick}</div>"
+    avatar = member["avatar_url"] or "/static/matchpoint-logo-mark.png"
+    name = member["nickname"] or member["login"]
+    return f"<div class='member'><a class='member-avatar' href='/profile?id={member['user_id']}'><img src='{esc(avatar)}' alt=''></a><div class='member-nick'><span>Ник</span><b><a href='/profile?id={member['user_id']}'>{esc(name)}</a></b></div>{form}{kick}</div>"
 
 
 def chips(text):

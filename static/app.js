@@ -72,6 +72,29 @@ document.querySelectorAll("[data-reset-after-submit]").forEach((form) => {
   });
 });
 
+document.querySelectorAll("input[type='file'][data-preview-target]").forEach((input) => {
+  input.addEventListener("change", () => {
+    const file = input.files?.[0];
+    const preview = document.querySelector(`[data-preview-id="${input.dataset.previewTarget}"]`);
+    const label = input.closest(".file-drop")?.querySelector("span");
+    if (label) label.textContent = file ? file.name : "Выбрать файл";
+    if (!preview || !file) return;
+    preview.src = URL.createObjectURL(file);
+    preview.classList.add("active");
+  });
+});
+
+const bannerX = document.querySelector("[data-banner-x]");
+const bannerY = document.querySelector("[data-banner-y]");
+const bannerPosition = document.querySelector("[data-banner-position]");
+function updateBannerPosition() {
+  if (!bannerX || !bannerY || !bannerPosition) return;
+  bannerPosition.value = `${bannerX.value}% ${bannerY.value}%`;
+}
+bannerX?.addEventListener("input", updateBannerPosition);
+bannerY?.addEventListener("input", updateBannerPosition);
+updateBannerPosition();
+
 document.querySelectorAll("[data-chat-feed]").forEach((chat) => {
   const feedUrl = chat.dataset.chatFeed;
   const messages = chat.querySelector("[data-chat-messages]");
