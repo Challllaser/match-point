@@ -105,6 +105,41 @@ def check_password(password, stored):
     return hash_password(password, salt).split("$", 1)[1] == digest
 
 
+def is_hashed_secret(value):
+    if not value or "$" not in value:
+        return False
+    salt, digest = value.split("$", 1)
+    return len(salt) == 24 and len(digest) == 64 and all(c in "0123456789abcdef" for c in digest.lower())
+
+
+def verify_team_secret(entered, stored):
+    if not stored:
+        return False
+    if is_hashed_secret(stored):
+        return check_password(entered, stored)
+    return entered == stored
+
+
+def is_staff(user):
+    return bool(user and user["role"] in ("ADMIN", "OWNER"))
+
+
+def is_owner(user):
+    return bool(user and user["role"] == "OWNER")
+
+
+def admin_user_actions(current_user, target_user):
+    if current_user["id"] == target_user["id"]:
+        action = "Нельзя удалить себя"
+    else:
+        action = f"<a class='danger' href='/admin/delete?type=user&id={target_user['id']}'>Удалить</a>"
+    if is_owner(current_user) and target_user["role"] != "OWNER":
+        next_role = "USER" if target_user["role"] == "ADMIN" else "ADMIN"
+        label = "Снять админа" if target_user["role"] == "ADMIN" else "Выдать админа"
+        action += f"<form method='post' action='/admin/role?id={target_user['id']}'><input type='hidden' name='role' value='{next_role}'><button class='btn tiny'>{label}</button></form>"
+    return action
+
+
 def ensure_column(conn, table, column, column_type):
     columns = [row["name"] for row in conn.execute(f"PRAGMA table_info({table})")]
     if column not in columns:
@@ -287,6 +322,15 @@ def init_db():
                     ("Valorant", "VAL", "Тактический шутер с агентами"),
                 ],
             )
+        for login in ("challlaser", "ricka"):
+            owner = conn.execute("SELECT id FROM users WHERE login = ?", (login,)).fetchone()
+            if owner:
+                conn.execute("UPDATE users SET role='OWNER' WHERE login=?", (login,))
+            else:
+                conn.execute(
+                    "INSERT INTO users(login, full_name, password_hash, role, created_at) VALUES(?,?,?,?,?)",
+                    (login, "Владелец платформы", hash_password("12345"), "OWNER", now()),
+                )
         seed_disciplines(conn)
 
 
@@ -363,7 +407,7 @@ class App(BaseHTTPRequestHandler):
         user = self.require_user()
         if not user:
             return None
-        if user["role"] != "ADMIN":
+        if not is_staff(user):
             self.redirect("/dashboard?msg=Нужны права администратора")
             return None
         return user
@@ -383,10 +427,12 @@ class App(BaseHTTPRequestHandler):
             "/tournament": self.tournament_detail,
             "/tournament/edit": self.tournament_edit,
             "/tournament/register": self.tournament_register,
+            "/tournament/unregister": self.tournament_unregister,
             "/tournament/message": self.tournament_message,
             "/tournament/messages": self.tournament_messages,
             "/chat/global": self.global_message,
             "/chat/global/feed": self.global_feed,
+            "/message/delete": self.message_delete,
             "/match/score": self.match_score,
             "/bracket": self.bracket,
             "/veto": self.veto,
@@ -407,6 +453,8 @@ class App(BaseHTTPRequestHandler):
             "/admin/tournaments": self.admin_tournaments,
             "/admin/delete": self.admin_delete,
             "/admin/status": self.admin_status,
+            "/admin/role": self.admin_role,
+            "/password": self.change_password,
             "/tournament/delete": self.tournament_delete,
         }
         handler = routes.get(path)
@@ -458,8 +506,8 @@ class App(BaseHTTPRequestHandler):
         cards = "".join(tournament_card(t) for t in tournaments) or "<p class='muted'>Пока нет турниров. Создайте первый.</p>"
         teams_html = "".join(f"<a class='rank-row' href='/team?id={t['id']}'><b>{esc(t['name'])}</b><span>{esc(t['discipline'])} · {t['points']} очков</span></a>" for t in top_teams) or "<p class='muted'>Команд пока нет.</p>"
         players_html = "".join(f"<div class='rank-row'><b>{esc(p['login'])}</b><span>{p['points']} очков</span></div>" for p in top_players)
-        global_chat = "".join(message_html(m) for m in global_messages) or "<p class='muted'>В общем чате пока пусто.</p>"
         user = self.current_user()
+        global_chat = "".join(message_html(m, user, "global", "/") for m in global_messages) or "<p class='muted'>В общем чате пока пусто.</p>"
         chat_form = global_chat_form() if user else "<a class='btn primary' href='/login'>Войти в общий чат</a>"
         chat_panel = chat_shell("Общий чат", global_chat, chat_form, "/chat/global/feed")
         self.send_html(
@@ -547,6 +595,32 @@ class App(BaseHTTPRequestHandler):
         self.send_header("Set-Cookie", "session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
         self.end_headers()
 
+    def change_password(self):
+        user = self.require_user()
+        if not user:
+            return
+        if self.command == "POST":
+            data = self.form()
+            if not check_password(data.get("old_password", ""), user["password_hash"]):
+                return self.redirect("/password?msg=Текущий пароль неверный")
+            if len(data.get("new_password", "")) < 4 or data.get("new_password") != data.get("new_password2"):
+                return self.redirect("/password?msg=Новые пароли не совпадают или слишком короткие")
+            with db() as conn:
+                conn.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(data["new_password"]), user["id"]))
+            return self.redirect("/dashboard?msg=Пароль обновлен")
+        self.send_html(
+            """
+            <section class='auth-card'><h1>Смена пароля</h1>
+            <form method='post' action='/password' class='form'>
+                <label>Текущий пароль<input type='password' name='old_password' required></label>
+                <label>Новый пароль<input type='password' name='new_password' required></label>
+                <label>Повторите новый пароль<input type='password' name='new_password2' required></label>
+                <button class='btn primary'>Сохранить пароль</button>
+            </form></section>
+            """,
+            "Смена пароля",
+        )
+
     def dashboard(self):
         user = self.require_user()
         if not user:
@@ -576,7 +650,7 @@ class App(BaseHTTPRequestHandler):
             ).fetchall()
         team_html = team_card(team) if team else "<p class='muted'>Вы пока не состоите в команде.</p><div class='actions'><a class='btn' href='/team/new'>Создать команду</a><a class='btn' href='/teams'>Найти команду</a></div>"
         tour_html = "".join(f"<a class='list-row' href='/tournament?id={t['id']}'>{esc(t['title'])}<span>{esc(t['status'])}</span></a>" for t in my_tournaments) or "<p class='muted'>Ваша команда еще не зарегистрирована на турнир.</p><a class='btn' href='/tournaments'>Найти турнир</a>"
-        admin_link = "<a class='quick' href='/admin'>Админ-панель</a>" if user["role"] == "ADMIN" else ""
+        admin_link = "<a class='quick' href='/admin'>Админ-панель</a>" if is_staff(user) else ""
         self.send_html(
             f"""
             <section class="welcome"><h1>Добро пожаловать, {esc(user['login'])}!</h1><p>Личный кабинет</p></section>
@@ -643,7 +717,7 @@ class App(BaseHTTPRequestHandler):
             tournament = conn.execute("SELECT * FROM tournaments WHERE id = ?", (tid,)).fetchone()
         if not tournament:
             return self.redirect("/tournaments?msg=Турнир не найден")
-        if user["role"] != "ADMIN" and tournament["creator_id"] != user["id"]:
+        if not is_staff(user) and tournament["creator_id"] != user["id"]:
             return self.redirect(f"/tournament?id={tid}&msg=Нет прав на редактирование")
         if self.command == "POST":
             data = self.form()
@@ -697,12 +771,13 @@ class App(BaseHTTPRequestHandler):
                 ).fetchall()
         if not t:
             return self.redirect("/tournaments?msg=Турнир не найден")
-        can_edit = user and (user["role"] == "ADMIN" or t["creator_id"] == user["id"])
+        can_edit = user and (is_staff(user) or t["creator_id"] == user["id"])
         edit = f"<a class='btn' href='/tournament/edit?id={t['id']}'>Редактировать</a>" if can_edit else ""
         delete = f"<a class='btn danger-btn' href='/tournament/delete?id={t['id']}'>Удалить турнир</a>" if can_edit else ""
         register_form = registration_form(t, my_teams, regs) if user else "<a class='btn primary' href='/login'>Войти для регистрации</a>"
+        unregister_form = tournament_unregister_controls(t, my_teams, regs) if user else ""
         participants = "".join(f"<a class='team-tile' href='/team?id={r['team_id']}'><b>{esc(r['name'])}</b><span>{esc(r['discipline'])} · {esc(r['tag'])}</span></a>" for r in regs) or "<p class='muted'>Команды пока не зарегистрированы.</p>"
-        chat = "".join(message_html(m) for m in messages) or "<p class='muted'>В чате пока тихо.</p>"
+        chat = "".join(message_html(m, user, "tournament", f"/tournament?id={t['id']}") for m in messages) or "<p class='muted'>В чате пока тихо.</p>"
         chat_form = tournament_chat_form(t["id"]) if user else ""
         chat_panel = chat_shell("Чат турнира", chat, chat_form, f"/tournament/messages?id={t['id']}")
         winner_banner = finished_winner_banner(t["id"]) if t["status"] == "FINISHED" else ""
@@ -725,7 +800,7 @@ class App(BaseHTTPRequestHandler):
                     <section class="panel"><h2>Участники <span>{len(regs)}/{t['max_teams']}</span></h2><div class="team-list">{participants}</div></section>
                     {chat_panel}
                 </main>
-                <aside class="panel sticky"><h2>Ваша команда</h2>{register_form}<a class="btn" href="/bracket?id={t['id']}">Сетка и бан-пики</a>{edit}{delete}</aside>
+                <aside class="panel sticky"><h2>Ваша команда</h2>{register_form}{unregister_form}<a class="btn" href="/bracket?id={t['id']}">Сетка и бан-пики</a>{edit}{delete}</aside>
             </div>
             """,
             esc(t["title"]),
@@ -748,7 +823,7 @@ class App(BaseHTTPRequestHandler):
             if t["status"] == "FINISHED":
                 return self.redirect(f"/tournament?id={tid}&msg=Турнир завершен, регистрация закрыта")
             if member["team_role"] not in ("Капитан", "Тренер", "Менеджер"):
-                return self.redirect(f"/tournament?id={tid}&msg=Регистрировать команду может только капитан, тренер или менеджер")
+                return self.redirect(f"/tournament?id={tid}&msg=Регистрировать команду может только владелец, тренер или менеджер")
             if t["is_private"] and code != (t["private_code"] or ""):
                 return self.redirect(f"/tournament?id={tid}&msg=Неверный код приватного турнира")
             if count >= t["max_teams"]:
@@ -758,6 +833,22 @@ class App(BaseHTTPRequestHandler):
             except sqlite3.IntegrityError:
                 return self.redirect(f"/tournament?id={tid}&msg=Команда уже зарегистрирована")
         return self.redirect(f"/tournament?id={tid}&msg=Команда зарегистрирована")
+
+    def tournament_unregister(self):
+        user = self.require_user()
+        if not user:
+            return
+        tid = self.query.get("id")
+        team_id = self.form().get("team_id")
+        with db() as conn:
+            t = conn.execute("SELECT * FROM tournaments WHERE id = ?", (tid,)).fetchone()
+            member = conn.execute("SELECT * FROM team_members WHERE team_id = ? AND user_id = ?", (team_id, user["id"])).fetchone()
+            if not t or not member:
+                return self.redirect(f"/tournament?id={tid}&msg=Команда не найдена")
+            if member["team_role"] not in ("Капитан", "Тренер", "Менеджер") and not is_staff(user):
+                return self.redirect(f"/tournament?id={tid}&msg=Снять команду может владелец, тренер или менеджер")
+            conn.execute("DELETE FROM registrations WHERE tournament_id=? AND team_id=?", (tid, team_id))
+        self.redirect(f"/tournament?id={tid}&msg=Команда снята с турнира")
 
     def tournament_message(self):
         user = self.require_user()
@@ -775,12 +866,13 @@ class App(BaseHTTPRequestHandler):
 
     def tournament_messages(self):
         tid = self.query.get("id")
+        user = self.current_user()
         with db() as conn:
             messages = conn.execute(
                 "SELECT * FROM (SELECT m.*, u.login FROM messages m JOIN users u ON u.id=m.user_id WHERE m.tournament_id=? ORDER BY m.id DESC LIMIT 40) ORDER BY id",
                 (tid,),
             ).fetchall()
-        html_body = "".join(message_html(m) for m in messages) or "<p class='muted'>В чате пока тихо.</p>"
+        html_body = "".join(message_html(m, user, "tournament", f"/tournament?id={tid}") for m in messages) or "<p class='muted'>В чате пока тихо.</p>"
         self.send_fragment(html_body)
 
     def global_message(self):
@@ -797,12 +889,30 @@ class App(BaseHTTPRequestHandler):
         self.redirect("/")
 
     def global_feed(self):
+        user = self.current_user()
         with db() as conn:
             messages = conn.execute(
                 "SELECT * FROM (SELECT gm.*, u.login FROM global_messages gm JOIN users u ON u.id=gm.user_id ORDER BY gm.id DESC LIMIT 40) ORDER BY id"
             ).fetchall()
-        html_body = "".join(message_html(m) for m in messages) or "<p class='muted'>В общем чате пока пусто.</p>"
+        html_body = "".join(message_html(m, user, "global", "/") for m in messages) or "<p class='muted'>В общем чате пока пусто.</p>"
         self.send_fragment(html_body)
+
+    def message_delete(self):
+        user = self.require_user()
+        if not user:
+            return
+        scope = self.query.get("scope", "tournament")
+        message_id = self.query.get("id")
+        back = self.query.get("back", "/")
+        table_name = "global_messages" if scope == "global" else "messages"
+        with db() as conn:
+            msg = conn.execute(f"SELECT * FROM {table_name} WHERE id=?", (message_id,)).fetchone()
+            if not msg:
+                return self.redirect(f"{back}?msg=Сообщение не найдено")
+            if msg["user_id"] != user["id"] and not is_staff(user):
+                return self.redirect(f"{back}?msg=Недостаточно прав")
+            conn.execute(f"DELETE FROM {table_name} WHERE id=?", (message_id,))
+        self.redirect(back)
 
     def match_score(self):
         user = self.require_user()
@@ -818,7 +928,7 @@ class App(BaseHTTPRequestHandler):
                 "SELECT id FROM teams WHERE id IN (?,?) AND captain_id=?",
                 (match["team1_id"], match["team2_id"], user["id"]),
             ).fetchone()
-            if user["role"] != "ADMIN" and not is_captain:
+            if not is_staff(user) and not is_captain:
                 return self.redirect(f"/bracket?id={match['tournament_id']}&msg=Нет прав на счет матча")
             scores = []
             for i in range(1, 8):
@@ -827,7 +937,7 @@ class App(BaseHTTPRequestHandler):
                     scores.append(f"Карта {i}: {score}")
             map_scores = "; ".join(scores) or data.get("map_scores", "").strip()
             winner_id = data.get("winner_id") or None
-            status = "CONFIRMED" if user["role"] == "ADMIN" else "PENDING"
+            status = "CONFIRMED" if is_staff(user) else "PENDING"
             conn.execute(
                 "INSERT INTO match_scores(match_id, user_id, map_scores, winner_id, status, created_at) VALUES(?,?,?,?,?,?)",
                 (match_id, user["id"], map_scores, winner_id, status, now()),
@@ -951,7 +1061,7 @@ class App(BaseHTTPRequestHandler):
             t = conn.execute("SELECT * FROM tournaments WHERE id=?", (tid,)).fetchone()
             if not t:
                 return self.redirect("/tournaments?msg=Турнир не найден")
-            if user["role"] != "ADMIN" and t["creator_id"] != user["id"]:
+            if not is_staff(user) and t["creator_id"] != user["id"]:
                 return self.redirect(f"/tournament?id={tid}&msg=Нет прав на удаление турнира")
             conn.execute("DELETE FROM tournaments WHERE id=?", (tid,))
         self.redirect("/tournaments?msg=Турнир удален")
@@ -1043,10 +1153,12 @@ class App(BaseHTTPRequestHandler):
             join_key = data.get("join_key")
             if not join_key or join_key == "Сгенерируется автоматически":
                 join_key = secrets.token_hex(4)
+            join_password = data.get("join_password", "").strip()
+            join_password_hash = hash_password(join_password) if join_password else ""
             with db() as conn:
                 cur = conn.execute(
                     "INSERT INTO teams(name, tag, discipline_id, captain_id, description, join_password, join_key, created_at) VALUES(?,?,?,?,?,?,?,?)",
-                    (data.get("name"), data.get("tag"), data.get("discipline_id"), user["id"], data.get("description"), data.get("join_password"), join_key, now()),
+                    (data.get("name"), data.get("tag"), data.get("discipline_id"), user["id"], data.get("description"), join_password_hash, join_key, now()),
                 )
                 conn.execute("INSERT INTO team_members(team_id, user_id, team_role, joined_at) VALUES(?,?,?,?)", (cur.lastrowid, user["id"], "Капитан", now()))
             return self.redirect("/dashboard?msg=Команда создана")
@@ -1071,7 +1183,7 @@ class App(BaseHTTPRequestHandler):
         if not team:
             return self.redirect("/dashboard?msg=Команда не найдена")
         is_member = user and any(m["user_id"] == user["id"] for m in members)
-        is_captain = user and (user["id"] == team["captain_id"] or user["role"] == "ADMIN")
+        is_captain = user and (user["id"] == team["captain_id"] or is_staff(user))
         member_html = "".join(member_row(team, m, is_captain) for m in members)
         actions = join_team_form(team_id) if user and not is_member else ""
         if user and is_member and not is_captain:
@@ -1108,8 +1220,12 @@ class App(BaseHTTPRequestHandler):
             if not team:
                 return self.redirect("/teams?msg=Команда не найдена")
             entered = data.get("join_secret", "")
-            if (team["join_password"] or team["join_key"]) and entered not in (team["join_password"], team["join_key"]):
+            password_ok = verify_team_secret(entered, team["join_password"])
+            key_ok = bool(team["join_key"] and entered == team["join_key"])
+            if (team["join_password"] or team["join_key"]) and not (password_ok or key_ok):
                 return self.redirect(f"/team?id={team_id}&msg=Неверный пароль или ключ команды")
+            if password_ok and team["join_password"] and not is_hashed_secret(team["join_password"]):
+                conn.execute("UPDATE teams SET join_password=? WHERE id=?", (hash_password(entered), team_id))
             try:
                 conn.execute("INSERT INTO team_members(team_id, user_id, team_role, joined_at) VALUES(?,?,?,?)", (team_id, user["id"], "Игрок", now()))
             except sqlite3.IntegrityError:
@@ -1126,7 +1242,7 @@ class App(BaseHTTPRequestHandler):
             if not team:
                 return self.redirect("/teams?msg=Команда не найдена")
             if team["captain_id"] == user["id"]:
-                return self.redirect(f"/team?id={team_id}&msg=Капитан расформировывает команду через кнопку удаления")
+                return self.redirect(f"/team?id={team_id}&msg=Владелец расформировывает команду через кнопку удаления")
             conn.execute("DELETE FROM team_members WHERE team_id=? AND user_id=?", (team_id, user["id"]))
         self.redirect("/teams?msg=Вы вышли из команды")
 
@@ -1140,7 +1256,7 @@ class App(BaseHTTPRequestHandler):
             team = conn.execute("SELECT * FROM teams WHERE id=?", (team_id,)).fetchone()
             if not team:
                 return self.redirect("/teams?msg=Команда не найдена")
-            if user["role"] != "ADMIN" and team["captain_id"] != user["id"]:
+            if not is_staff(user) and team["captain_id"] != user["id"]:
                 return self.redirect(f"/team?id={team_id}&msg=Недостаточно прав")
             if str(team["captain_id"]) == str(target_id):
                 return self.redirect(f"/team?id={team_id}&msg=Владельца нельзя кикнуть")
@@ -1154,10 +1270,25 @@ class App(BaseHTTPRequestHandler):
         team_id = self.query.get("id")
         with db() as conn:
             team = conn.execute("SELECT * FROM teams WHERE id=?", (team_id,)).fetchone()
-            if not team:
-                return self.redirect("/teams?msg=Команда не найдена")
-            if user["role"] != "ADMIN" and team["captain_id"] != user["id"]:
-                return self.redirect(f"/team?id={team_id}&msg=Нет прав на удаление команды")
+        if not team:
+            return self.redirect("/teams?msg=Команда не найдена")
+        if not is_staff(user) and team["captain_id"] != user["id"]:
+            return self.redirect(f"/team?id={team_id}&msg=Нет прав на удаление команды")
+        if self.command != "POST":
+            return self.send_html(
+                f"""
+                <section class='panel narrow danger-zone'><h1>Расформировать команду</h1>
+                <p class='muted'>Это действие удалит команду и все связанные регистрации. Подтвердите своим паролем.</p>
+                <form method='post' action='/team/delete?id={team_id}' class='form'>
+                    <label>Ваш пароль<input type='password' name='password' required autocomplete='current-password'></label>
+                    <div class='form-actions'><a class='btn' href='/team?id={team_id}'>Отмена</a><button class='btn danger-btn'>Расформировать</button></div>
+                </form></section>
+                """,
+                "Подтверждение удаления",
+            )
+        if not check_password(self.form().get("password", ""), user["password_hash"]):
+            return self.redirect(f"/team/delete?id={team_id}&msg=Неверный пароль")
+        with db() as conn:
             conn.execute("DELETE FROM teams WHERE id=?", (team_id,))
         self.redirect("/teams?msg=Команда удалена")
 
@@ -1169,7 +1300,7 @@ class App(BaseHTTPRequestHandler):
         team_id = data.get("team_id")
         with db() as conn:
             team = conn.execute("SELECT * FROM teams WHERE id = ?", (team_id,)).fetchone()
-            if team and (team["captain_id"] == user["id"] or user["role"] == "ADMIN"):
+            if team and (team["captain_id"] == user["id"] or is_staff(user)):
                 new_role = data.get("team_role")
                 target_id = data.get("user_id")
                 if new_role in ("Капитан", "Тренер", "Менеджер"):
@@ -1193,15 +1324,20 @@ class App(BaseHTTPRequestHandler):
             team = conn.execute("SELECT * FROM teams WHERE id = ?", (team_id,)).fetchone()
         if not team:
             return self.redirect("/dashboard?msg=Команда не найдена")
-        if user["role"] != "ADMIN" and team["captain_id"] != user["id"]:
+        if not is_staff(user) and team["captain_id"] != user["id"]:
             return self.redirect(f"/team?id={team_id}&msg=Нет прав")
         if self.command == "POST":
             data = self.form()
             join_key = data.get("join_key")
             if not join_key or join_key == "Сгенерируется автоматически":
                 join_key = secrets.token_hex(4)
+            join_password = data.get("join_password", "").strip()
+            join_password_value = hash_password(join_password) if join_password else team["join_password"]
             with db() as conn:
-                conn.execute("UPDATE teams SET name=?, tag=?, discipline_id=?, description=?, join_password=?, join_key=? WHERE id=?", (data.get("name"), data.get("tag"), data.get("discipline_id"), data.get("description"), data.get("join_password"), join_key, team_id))
+                conn.execute(
+                    "UPDATE teams SET name=?, tag=?, discipline_id=?, description=?, join_password=?, join_key=? WHERE id=?",
+                    (data.get("name"), data.get("tag"), data.get("discipline_id"), data.get("description"), join_password_value, join_key, team_id),
+                )
             return self.redirect(f"/team?id={team_id}&msg=Команда обновлена")
         self.send_html(team_form_html(f"/team/edit?id={team_id}", team), "Редактирование команды")
 
@@ -1248,6 +1384,7 @@ class App(BaseHTTPRequestHandler):
             action = "Нельзя удалить себя"
             if u["id"] != user["id"]:
                 action = f"<a class='danger' href='/admin/delete?type=user&id={u['id']}'>Удалить</a>"
+            action = admin_user_actions(user, u)
             rows += f"<tr><td>{u['id']}</td><td>{esc(u['login'])}</td><td>{esc(u['full_name']) or '-'}</td><td><span class='badge'>{esc(u['role'])}</span></td><td>{esc(u['created_at'])}</td><td>{action}</td></tr>"
         self.send_html(f"<section class='section-head'><h1>Управление пользователями</h1><a class='btn' href='/admin'>Назад</a></section>{table(['ID','Логин','ФИО','Роль','Дата регистрации','Действия'], rows)}<p class='note'>Удаление пользователя также очищает связанные членства в командах.</p>", "Пользователи")
 
@@ -1264,7 +1401,7 @@ class App(BaseHTTPRequestHandler):
                 """
             ).fetchall()
         rows = "".join(f"<tr><td>{t['id']}</td><td><a href='/team?id={t['id']}'>{esc(t['name'])}</a></td><td>{esc(t['tag'])}</td><td>{esc(t['discipline'])}</td><td>{esc(t['captain'])}</td><td>{t['members']}</td><td>{esc(t['created_at'])}</td><td><a class='danger' href='/admin/delete?type=team&id={t['id']}'>Удалить</a></td></tr>" for t in items)
-        self.send_html(f"<section class='section-head'><h1>Управление командами</h1><a class='btn' href='/admin'>Назад</a></section>{table(['ID','Название','Тег','Дисциплина','Капитан','Участники','Дата','Действия'], rows)}", "Команды")
+        self.send_html(f"<section class='section-head'><h1>Управление командами</h1><a class='btn' href='/admin'>Назад</a></section>{table(['ID','Название','Тег','Дисциплина','Владелец','Участники','Дата','Действия'], rows)}", "Команды")
 
     def admin_tournaments(self):
         if not self.require_admin():
@@ -1286,23 +1423,59 @@ class App(BaseHTTPRequestHandler):
             conn.execute("UPDATE tournaments SET status=? WHERE id=?", (self.form().get("status"), self.query.get("id")))
         self.redirect("/admin/tournaments?msg=Статус обновлен")
 
+    def admin_role(self):
+        user = self.require_admin()
+        if not user:
+            return
+        if not is_owner(user):
+            return self.redirect("/admin/users?msg=Только владелец может менять админ-права")
+        target_id = self.query.get("id")
+        role = self.form().get("role")
+        if role not in ("ADMIN", "USER"):
+            return self.redirect("/admin/users?msg=Некорректная роль")
+        with db() as conn:
+            target = conn.execute("SELECT * FROM users WHERE id=?", (target_id,)).fetchone()
+            if not target or target["role"] == "OWNER":
+                return self.redirect("/admin/users?msg=Нельзя менять этого пользователя")
+            conn.execute("UPDATE users SET role=? WHERE id=?", (role, target_id))
+        self.redirect("/admin/users?msg=Права обновлены")
+
     def admin_delete(self):
         user = self.require_admin()
         if not user:
             return
         kind, item_id = self.query.get("type"), self.query.get("id")
         tables = {"discipline": "disciplines", "team": "teams", "user": "users", "tournament": "tournaments"}
+        labels = {"discipline": "дисциплину", "team": "команду", "user": "пользователя", "tournament": "турнир"}
+        backs = {"discipline": "/admin/disciplines", "team": "/admin/teams", "user": "/admin/users", "tournament": "/admin/tournaments"}
+        back = backs.get(kind, "/admin")
+        if kind not in tables:
+            return self.redirect("/admin?msg=Неизвестный тип удаления")
         if kind == "user" and str(user["id"]) == str(item_id):
             return self.redirect("/admin/users?msg=Нельзя удалить себя")
-        if kind in tables:
-            with db() as conn:
-                conn.execute(f"DELETE FROM {tables[kind]} WHERE id=?", (item_id,))
-        self.redirect("/admin?msg=Удалено")
+        if self.command != "POST":
+            return self.send_html(
+                f"""
+                <section class='panel narrow danger-zone'><h1>Подтверждение удаления</h1>
+                <p class='muted'>Вы собираетесь удалить {labels[kind]}. Введите пароль администратора, чтобы действие не сработало случайно.</p>
+                <form method='post' action='/admin/delete?type={esc(kind)}&id={esc(item_id)}' class='form'>
+                    <label>Ваш пароль<input type='password' name='password' required autocomplete='current-password'></label>
+                    <div class='form-actions'><a class='btn' href='{back}'>Отмена</a><button class='btn danger-btn'>Удалить</button></div>
+                </form></section>
+                """,
+                "Подтверждение удаления",
+            )
+        if not check_password(self.form().get("password", ""), user["password_hash"]):
+            return self.redirect(f"{back}?msg=Неверный пароль")
+        with db() as conn:
+            conn.execute(f"DELETE FROM {tables[kind]} WHERE id=?", (item_id,))
+        self.redirect(f"{back}?msg=Удалено")
+
 
 
 def layout(body, title, user, msg=None):
-    auth = f"<a href='/dashboard'>{esc(user['login'])}</a><a href='/logout'>Выйти</a>" if user else "<a href='/login'>Войти</a><a href='/register'>Регистрация</a>"
-    admin = "<a href='/admin'>Админ</a>" if user and user["role"] == "ADMIN" else ""
+    auth = f"<a href='/dashboard'>{esc(user['login'])}</a><a href='/password'>Пароль</a><a href='/logout'>Выйти</a>" if user else "<a href='/login'>Войти</a><a href='/register'>Регистрация</a>"
+    admin = "<a href='/admin'>Админ</a>" if is_staff(user) else ""
     flash = f"<div class='flash'>{esc(msg)}<button data-close>×</button></div>" if msg else ""
     return f"""<!doctype html>
 <html lang="ru">
@@ -1564,6 +1737,7 @@ def team_form_html(action, team=None):
     team = dict(team) if team else {}
     key_value = team.get("join_key", "Сгенерируется автоматически") if team else "Сгенерируется автоматически"
     key_readonly = "" if team else "readonly"
+    password_placeholder = "Оставьте пустым, чтобы не менять" if team else "Можно оставить пустым"
     return f"""
     <section class="panel narrow"><h1>{'Редактирование команды' if team else 'Создание команды'}</h1>
     <form method="post" action="{action}" class="form grid-form">
@@ -1571,11 +1745,10 @@ def team_form_html(action, team=None):
         <label>Тег<input name="tag" required value="{esc(team.get('tag',''))}"></label>
         <label class="wide">Дисциплина<select name="discipline_id">{disciplines_options(team.get('discipline_id'))}</select></label>
         <label class="wide">Описание<textarea name="description">{esc(team.get('description',''))}</textarea></label>
-        <label>Пароль для вступления<input name="join_password" value="{esc(team.get('join_password',''))}" placeholder="Можно оставить пустым"></label>
+        <label>Пароль для вступления<input name="join_password" value="" placeholder="{password_placeholder}"></label>
         <label>Ключ вступления<input name="join_key" value="{esc(key_value)}" {key_readonly}></label>
         <div class="form-actions wide"><a class="btn" href="/dashboard">Отмена</a><button class="btn primary">Сохранить</button></div>
     </form></section>"""
-
 
 def tournament_card(t):
     count = t["reg_count"] if "reg_count" in t.keys() else "0"
@@ -1640,7 +1813,7 @@ def is_media_url(url):
     return any(clean.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".gif", ".webp"])
 
 
-def message_html(m):
+def message_html(m, user=None, scope="tournament", back="/"):
     body = m["body"] or ""
     urls = []
     if "media_url" in m.keys() and m["media_url"]:
@@ -1657,7 +1830,10 @@ def message_html(m):
         else:
             media += f"<a class='chat-media-link' href='{esc(url)}' target='_blank'>{esc(url)}</a>"
     emoji = f"<span class='chat-emoji'>{esc(m['emoji'])}</span>" if "emoji" in m.keys() and m["emoji"] else ""
-    return f"<div class='message' data-message-id='{m['id']}'><b>{esc(m['login'])}</b><time>{esc(m['created_at'])}</time><p>{emoji} {esc(body)}</p>{media}</div>"
+    can_delete = user and (is_staff(user) or m["user_id"] == user["id"])
+    back_url = quote(back, safe="/:")
+    delete = f"<a class='message-delete' href='/message/delete?scope={esc(scope)}&id={m['id']}&back={esc(back_url)}'>Удалить</a>" if can_delete else ""
+    return f"<div class='message' data-message-id='{m['id']}'><b>{esc(m['login'])}</b><time>{esc(m['created_at'])}</time>{delete}<p>{emoji} {esc(body)}</p>{media}</div>"
 
 
 EMOJI_POOL = ["🔥", "💀", "🏆", "😎", "❤️", "😂", "👍", "😡", "👀", "⚡", "🎯", "🥶", "🤝", "🚀", "💪", "🤯", "🎮", "✅"]
@@ -1819,9 +1995,23 @@ def registration_form(t, my_teams, regs):
     allowed_roles = {"Капитан", "Тренер", "Менеджер"}
     options = "".join(f"<option value='{team['id']}'>{esc(team['name'])}</option>" for team in my_teams if team["id"] not in registered_ids and team["team_role"] in allowed_roles)
     if not options:
-        return "<p class='muted'>Нет доступной команды: регистрацию может отправить капитан, тренер или менеджер.</p><a class='btn' href='/team/new'>Создать команду</a>"
+        return "<p class='muted'>Нет доступной команды: регистрацию может отправить владелец, тренер или менеджер.</p><a class='btn' href='/team/new'>Создать команду</a>"
     code = "<input name='private_code' placeholder='Код турнира'>" if t["is_private"] else ""
     return f"<form method='post' action='/tournament/register?id={t['id']}' class='form'><select name='team_id'>{options}</select>{code}<button class='btn primary'>Зарегистрировать команду</button></form>"
+
+
+def tournament_unregister_controls(t, my_teams, regs):
+    registered_ids = {r["team_id"] for r in regs}
+    allowed_roles = {"Капитан", "Тренер", "Менеджер"}
+    buttons = []
+    for team in my_teams:
+        if team["id"] in registered_ids and team["team_role"] in allowed_roles:
+            buttons.append(
+                f"<form method='post' action='/tournament/unregister?id={t['id']}' class='form mini-form'>"
+                f"<input type='hidden' name='team_id' value='{team['id']}'>"
+                f"<button class='btn danger-btn'>Снять {esc(team['name'])} с турнира</button></form>"
+            )
+    return "".join(buttons)
 
 
 def member_row(team, member, can_edit):

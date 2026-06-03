@@ -994,6 +994,31 @@ button.primary:hover {
   word-break: break-word;
 }
 
+.message-delete {
+  justify-self: end;
+  width: max-content;
+  margin-left: auto;
+  padding: 4px 9px;
+  border-radius: 999px;
+  color: #ff9da8;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  border: 1px solid rgba(255, 99, 132, .26);
+  background: rgba(255, 99, 132, .08);
+}
+
+.message-delete:hover {
+  color: #ffecef;
+  border-color: rgba(255, 99, 132, .55);
+  box-shadow: 0 0 18px rgba(255, 99, 132, .20);
+}
+
+.danger-zone {
+  border-color: rgba(255, 99, 132, .32);
+  box-shadow: 0 0 36px rgba(255, 99, 132, .12), var(--shadow);
+}
+
 .chat-form {
   position: sticky;
   bottom: 0;
