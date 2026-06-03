@@ -397,6 +397,7 @@ class App(BaseHTTPRequestHandler):
             "/team/edit": self.team_edit,
             "/team/join": self.team_join,
             "/team/leave": self.team_leave,
+            "/team/kick": self.team_kick,
             "/team/delete": self.team_delete,
             "/team/role": self.team_role,
             "/admin": self.admin,
@@ -1083,7 +1084,7 @@ class App(BaseHTTPRequestHandler):
             f"""
             <div class="grid aside">
                 <section class="panel"><h1>{esc(team['name'])} <span class='badge'>{esc(team['tag'])}</span></h1>
-                    <p><b>Дисциплина:</b> {esc(team['discipline_name'])}</p><p><b>Капитан:</b> {esc(team['captain'])}</p>
+                    <p><b>Дисциплина:</b> {esc(team['discipline_name'])}</p><p><b>Владелец:</b> {esc(team['captain'])}</p>
                     <p><b>Описание:</b> {esc(team['description']) or 'Описание не заполнено.'}</p>
                 </section>
                 <aside class="panel actions-stack"><a class="btn" href="/tournaments">Найти турнир</a>{actions}</aside>
@@ -1129,6 +1130,23 @@ class App(BaseHTTPRequestHandler):
             conn.execute("DELETE FROM team_members WHERE team_id=? AND user_id=?", (team_id, user["id"]))
         self.redirect("/teams?msg=Вы вышли из команды")
 
+    def team_kick(self):
+        user = self.require_user()
+        if not user:
+            return
+        team_id = self.query.get("id")
+        target_id = self.query.get("user_id")
+        with db() as conn:
+            team = conn.execute("SELECT * FROM teams WHERE id=?", (team_id,)).fetchone()
+            if not team:
+                return self.redirect("/teams?msg=Команда не найдена")
+            if user["role"] != "ADMIN" and team["captain_id"] != user["id"]:
+                return self.redirect(f"/team?id={team_id}&msg=Недостаточно прав")
+            if str(team["captain_id"]) == str(target_id):
+                return self.redirect(f"/team?id={team_id}&msg=Владельца нельзя кикнуть")
+            conn.execute("DELETE FROM team_members WHERE team_id=? AND user_id=?", (team_id, target_id))
+        self.redirect(f"/team?id={team_id}&msg=Участник удален из команды")
+
     def team_delete(self):
         user = self.require_user()
         if not user:
@@ -1152,7 +1170,18 @@ class App(BaseHTTPRequestHandler):
         with db() as conn:
             team = conn.execute("SELECT * FROM teams WHERE id = ?", (team_id,)).fetchone()
             if team and (team["captain_id"] == user["id"] or user["role"] == "ADMIN"):
-                conn.execute("UPDATE team_members SET team_role = ? WHERE team_id = ? AND user_id = ?", (data.get("team_role"), team_id, data.get("user_id")))
+                new_role = data.get("team_role")
+                target_id = data.get("user_id")
+                if new_role in ("Капитан", "Тренер", "Менеджер"):
+                    exists = conn.execute(
+                        "SELECT user_id FROM team_members WHERE team_id=? AND team_role=? AND user_id<>?",
+                        (team_id, new_role, target_id),
+                    ).fetchone()
+                    if exists:
+                        return self.redirect(f"/team?id={team_id}&msg=В команде уже есть {new_role}")
+                conn.execute("UPDATE team_members SET team_role = ? WHERE team_id = ? AND user_id = ?", (new_role, team_id, target_id))
+                if new_role == "Капитан":
+                    conn.execute("UPDATE teams SET captain_id=? WHERE id=?", (target_id, team_id))
         self.redirect(f"/team?id={team_id}&msg=Роль обновлена")
 
     def team_edit(self):
@@ -1554,7 +1583,7 @@ def tournament_card(t):
 
 
 def team_card(team):
-    return f"<div class='team-summary'><h3>{esc(team['name'])} <span class='badge'>{esc(team['tag'])}</span></h3><p><b>Дисциплина:</b> {esc(team['discipline'])}</p><p><b>Капитан:</b> {esc(team['captain'])}</p><p><b>Ваша роль:</b> {esc(team['team_role'])}</p><a class='btn' href='/team?id={team['id']}'>Перейти к команде</a></div>"
+    return f"<div class='team-summary'><h3>{esc(team['name'])} <span class='badge'>{esc(team['tag'])}</span></h3><p><b>Дисциплина:</b> {esc(team['discipline'])}</p><p><b>Владелец:</b> {esc(team['captain'])}</p><p><b>Ваша роль:</b> {esc(team['team_role'])}</p><a class='btn' href='/team?id={team['id']}'>Перейти к команде</a></div>"
 
 
 def message_html(m):
@@ -1755,7 +1784,7 @@ def team_search_card(team, user, my_team):
     action = f"<a class='btn' href='/team?id={team['id']}'>Открыть</a>"
     if user and not my_team:
         action += join_team_form(team["id"])
-    return f"<article class='card'><span class='badge'>{esc(team['discipline'])}</span><h3>{esc(team['name'])}</h3><p>{esc(team['tag'])} · капитан {esc(team['captain'])}</p><p>{team['members']} участников · {locked}</p>{action}</article>"
+    return f"<article class='card'><span class='badge'>{esc(team['discipline'])}</span><h3>{esc(team['name'])}</h3><p>{esc(team['tag'])} · владелец {esc(team['captain'])}</p><p>{team['members']} участников · {locked}</p>{action}</article>"
 
 
 def join_team_form(team_id):
@@ -1798,10 +1827,13 @@ def registration_form(t, my_teams, regs):
 def member_row(team, member, can_edit):
     role = esc(member["team_role"])
     form = f"<div class='member-role'><span>Роль</span><b>{role}</b></div>"
+    kick = ""
     if can_edit:
         options = "".join(f"<option {'selected' if member['team_role']==value else ''}>{value}</option>" for value in ["Игрок", "Капитан", "Тренер", "Менеджер", "Запасной"])
         form = f"<form method='post' action='/team/role' class='role-form'><input type='hidden' name='team_id' value='{team['id']}'><input type='hidden' name='user_id' value='{member['user_id']}'><label>Роль<select name='team_role'>{options}</select></label><button class='btn tiny'>Назначить</button></form>"
-    return f"<div class='member'><div class='member-nick'><span>Ник</span><b>{esc(member['login'])}</b></div>{form}</div>"
+        if member["user_id"] != team["captain_id"]:
+            kick = f"<a class='btn tiny danger-btn' href='/team/kick?id={team['id']}&user_id={member['user_id']}'>Кикнуть</a>"
+    return f"<div class='member'><div class='member-nick'><span>Ник</span><b>{esc(member['login'])}</b></div>{form}{kick}</div>"
 
 
 def chips(text):
