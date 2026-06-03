@@ -1240,13 +1240,13 @@ button.primary:hover {
   display: grid;
   place-items: center;
   border-radius: 24px;
-  border: 1px solid color-mix(in srgb, var(--profile-color) 42%, rgba(255,255,255,.16));
+  border: 1px solid var(--profile-color);
   background:
-    radial-gradient(circle at 18% 30%, color-mix(in srgb, var(--profile-color) 28%, transparent), transparent 34%),
+    radial-gradient(circle at 18% 30%, var(--profile-soft), transparent 34%),
     linear-gradient(135deg, rgba(255,255,255,.11), rgba(255,255,255,.035));
   background-size: cover;
   background-position: center;
-  box-shadow: 0 0 54px color-mix(in srgb, var(--profile-color) 24%, transparent), var(--shadow);
+  box-shadow: 0 0 54px var(--profile-glow), var(--shadow);
   overflow: hidden;
 }
 
@@ -1275,10 +1275,12 @@ button.primary:hover {
 .profile-avatar {
   width: 190px;
   aspect-ratio: 1;
-  border-radius: 50%;
+  height: 190px;
+  border-radius: 50% !important;
   object-fit: cover;
-  border: 3px solid color-mix(in srgb, var(--profile-color) 68%, white);
-  box-shadow: 0 0 40px color-mix(in srgb, var(--profile-color) 38%, transparent), 0 18px 60px rgba(0,0,0,.45);
+  overflow: hidden;
+  border: 3px solid var(--profile-color);
+  box-shadow: 0 0 40px var(--profile-glow), 0 18px 60px rgba(0,0,0,.45);
   background: rgba(255,255,255,.08);
 }
 
@@ -1294,7 +1296,7 @@ button.primary:hover {
 .profile-team-tag {
   font-size: .62em;
   color: var(--profile-color);
-  text-shadow: 0 0 18px color-mix(in srgb, var(--profile-color) 42%, transparent);
+  text-shadow: 0 0 18px var(--profile-glow);
 }
 
 .profile-badges {
@@ -1306,8 +1308,8 @@ button.primary:hover {
 .profile-custom-role {
   padding: 7px 12px;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--profile-color) 45%, rgba(255,255,255,.2));
-  background: color-mix(in srgb, var(--profile-color) 15%, rgba(255,255,255,.06));
+  border: 1px solid var(--profile-color);
+  background: var(--profile-soft);
 }
 
 .profile-about {

@@ -132,6 +132,14 @@ def profile_color(user):
     return value if re.fullmatch(r"#[0-9a-fA-F]{6}", value or "") else "#00e5ff"
 
 
+def hex_to_rgba(value, alpha):
+    value = value.lstrip("#")
+    if not re.fullmatch(r"[0-9a-fA-F]{6}", value):
+        value = "00e5ff"
+    r, g, b = int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
+
 def is_staff(user):
     return bool(user and user["role"] in ("ADMIN", "OWNER"))
 
@@ -562,6 +570,7 @@ class App(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store, max-age=0")
         self.end_headers()
         self.wfile.write(data)
 
@@ -796,6 +805,7 @@ class App(BaseHTTPRequestHandler):
         avatar = profile["avatar_url"] or "/static/matchpoint-logo-mark.png"
         banner = profile["banner_url"] or ""
         color = profile_color(profile)
+        profile_style = f"--profile-color:{esc(color)};--profile-soft:{hex_to_rgba(color, .18)};--profile-glow:{hex_to_rgba(color, .38)};"
         tag = f"<a class='profile-team-tag' href='/team?id={team['id']}'>[{esc(team['tag'])}]</a>" if team else ""
         edit = f"<a class='btn primary' href='/profile/edit'>Редактировать профиль</a>" if is_self else ""
         custom = f"<span class='profile-custom-role'>{esc(profile['custom_role'])}</span>" if profile["custom_role"] else ""
@@ -811,7 +821,7 @@ class App(BaseHTTPRequestHandler):
         banner_style = f"background-image: linear-gradient(135deg, rgba(0,0,0,.18), rgba(0,0,0,.34)), url('{esc(banner)}');" if banner else ""
         self.send_html(
             f"""
-            <section class='profile-page' style='--profile-color:{esc(color)}'>
+            <section class='profile-page' style='{profile_style}'>
                 <div class='profile-banner' style="{banner_style}"><span>Banner</span></div>
                 <div class='profile-main'>
                     <aside class='profile-identity panel'>
@@ -1713,7 +1723,7 @@ def layout(body, title, user, msg=None):
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{esc(title)}</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=profile-chat-fix-2">
 </head>
 <body>
     <header class="topbar">
@@ -1722,7 +1732,7 @@ def layout(body, title, user, msg=None):
         <div class="auth">{auth}</div>
     </header>
     <main class="container">{flash}{body}</main>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=profile-chat-fix-2"></script>
 </body>
 </html>"""
 
@@ -1740,9 +1750,11 @@ def save_profile_upload(file_info, user_id, kind):
     if len(file_info["content"]) > 4 * 1024 * 1024:
         return ""
     name = f"profile_{user_id}_{kind}{ext}"
-    path = os.path.join(ROOT, "static", name)
-    with open(path, "wb") as f:
-        f.write(file_info["content"])
+    for folder in (os.path.join(ROOT, "static"), os.path.join(ROOT, "public_html", "static")):
+        if os.path.isdir(folder):
+            path = os.path.join(folder, name)
+            with open(path, "wb") as f:
+                f.write(file_info["content"])
     return f"/static/{name}"
 
 

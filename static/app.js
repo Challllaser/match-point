@@ -100,7 +100,12 @@ document.querySelectorAll("[data-chat-feed]").forEach((chat) => {
     const data = new FormData(form);
     if (!String(data.get("body") || "").trim() && !String(data.get("emoji") || "").trim()) return;
     try {
-      await fetch(form.action, { method: "POST", body: data, headers: { "X-Requested-With": "fetch" } });
+      const response = await fetch(form.action, { method: "POST", body: data, headers: { "X-Requested-With": "fetch" } });
+      if (response.redirected) {
+        window.location.href = response.url;
+        return;
+      }
+      if (!response.ok && response.status !== 204) throw new Error("chat post failed");
       form.reset();
       if (emojiInput) emojiInput.value = "";
       if (emojiPanel) emojiPanel.hidden = true;
