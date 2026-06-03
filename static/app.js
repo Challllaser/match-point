@@ -85,8 +85,8 @@ document.querySelectorAll("input[type='file'][data-preview-target]").forEach((in
     preview.src = url;
     if (cropImage) cropImage.src = url;
     if (panel) {
-      panel.hidden = false;
-      setTimeout(() => window.dispatchEvent(new Event("resize")), 30);
+      panel.classList.add("is-open");
+      window.dispatchEvent(new CustomEvent("cropper:open"));
     }
     preview.classList.add("active");
   });
@@ -96,8 +96,8 @@ document.querySelectorAll("[data-crop-open]").forEach((button) => {
   button.addEventListener("click", () => {
     const panel = document.getElementById(button.dataset.cropOpen || "");
     if (!panel) return;
-    panel.hidden = !panel.hidden;
-    if (!panel.hidden) setTimeout(() => window.dispatchEvent(new Event("resize")), 30);
+    panel.classList.toggle("is-open");
+    window.dispatchEvent(new CustomEvent("cropper:open"));
   });
 });
 
@@ -105,14 +105,21 @@ document.querySelectorAll("[data-banner-cropper], [data-avatar-cropper]").forEac
   const stage = cropper.querySelector(".crop-stage");
   const frame = cropper.querySelector("[data-crop-frame]");
   const hidden = cropper.querySelector("[data-banner-position], [data-avatar-position]");
+  const apply = cropper.querySelector("[data-crop-apply]");
+  const status = cropper.querySelector("[data-crop-status]");
   if (!stage || !frame || !hidden) return;
   let dragging = false;
   let offsetX = 0;
   let offsetY = 0;
 
+  function setStatus(text) {
+    if (status) status.textContent = text;
+  }
+
   function placeFromPercent() {
     const rect = stage.getBoundingClientRect();
     const f = frame.getBoundingClientRect();
+    if (!rect.width || !rect.height || !f.width || !f.height) return;
     const x = Number(cropper.dataset.x || 50);
     const y = Number(cropper.dataset.y || 50);
     frame.style.left = `${Math.max(0, Math.min(rect.width - f.width, rect.width * x / 100 - f.width / 2))}px`;
@@ -120,11 +127,12 @@ document.querySelectorAll("[data-banner-cropper], [data-avatar-cropper]").forEac
     hidden.value = `${Math.round(x)}% ${Math.round(y)}%`;
   }
 
-  function updateFromPointer(clientX, clientY) {
+  function updateFromPointer(clientX, clientY, centered = false) {
     const rect = stage.getBoundingClientRect();
     const f = frame.getBoundingClientRect();
-    const left = Math.max(0, Math.min(rect.width - f.width, clientX - rect.left - offsetX));
-    const top = Math.max(0, Math.min(rect.height - f.height, clientY - rect.top - offsetY));
+    if (!rect.width || !rect.height || !f.width || !f.height) return;
+    const left = Math.max(0, Math.min(rect.width - f.width, clientX - rect.left - (centered ? f.width / 2 : offsetX)));
+    const top = Math.max(0, Math.min(rect.height - f.height, clientY - rect.top - (centered ? f.height / 2 : offsetY)));
     frame.style.left = `${left}px`;
     frame.style.top = `${top}px`;
     const x = Math.round(((left + f.width / 2) / rect.width) * 100);
@@ -132,6 +140,7 @@ document.querySelectorAll("[data-banner-cropper], [data-avatar-cropper]").forEac
     cropper.dataset.x = String(x);
     cropper.dataset.y = String(y);
     hidden.value = `${x}% ${y}%`;
+    setStatus("Область выбрана. Нажми «Применить», затем «Сохранить профиль».");
   }
 
   frame.addEventListener("pointerdown", (event) => {
@@ -147,9 +156,56 @@ document.querySelectorAll("[data-banner-cropper], [data-avatar-cropper]").forEac
   frame.addEventListener("pointerup", () => {
     dragging = false;
   });
+  stage.addEventListener("click", (event) => {
+    if (event.target === frame || frame.contains(event.target)) return;
+    updateFromPointer(event.clientX, event.clientY, true);
+  });
+  apply?.addEventListener("click", () => {
+    placeFromPercent();
+    setStatus(`Применено: ${hidden.value}. Теперь нажми «Сохранить профиль».`);
+    cropper.classList.remove("is-open");
+  });
   window.addEventListener("resize", placeFromPercent);
-  if (!cropper.hidden) requestAnimationFrame(placeFromPercent);
-  else requestAnimationFrame(placeFromPercent);
+  window.addEventListener("cropper:open", () => setTimeout(placeFromPercent, 30));
+  requestAnimationFrame(placeFromPercent);
+});
+
+function bbPreview(text) {
+  let html = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  [
+    [/\[b\]([\s\S]*?)\[\/b\]/gi, "<strong>$1</strong>"],
+    [/\[i\]([\s\S]*?)\[\/i\]/gi, "<em>$1</em>"],
+    [/\[u\]([\s\S]*?)\[\/u\]/gi, "<u>$1</u>"],
+    [/\[s\]([\s\S]*?)\[\/s\]/gi, "<s>$1</s>"],
+    [/\[quote\]([\s\S]*?)\[\/quote\]/gi, "<blockquote>$1</blockquote>"],
+    [/\[code\]([\s\S]*?)\[\/code\]/gi, "<code>$1</code>"],
+    [/\[color=(#[0-9a-fA-F]{6})\]([\s\S]*?)\[\/color\]/gi, '<span style="color:$1">$2</span>'],
+    [/\[url=(https?:\/\/[^\]\s]+)\]([\s\S]*?)\[\/url\]/gi, '<a href="$1" target="_blank">$2</a>'],
+    [/\[url\](https?:\/\/[^\]\s]+)\[\/url\]/gi, '<a href="$1" target="_blank">$1</a>'],
+  ].forEach(([pattern, repl]) => { html = html.replace(pattern, repl); });
+  return html.replace(/\n/g, "<br>");
+}
+
+document.querySelectorAll("[data-bb-editor]").forEach((editor) => {
+  const textarea = editor.querySelector("[data-bb-textarea]");
+  const previewBox = editor.querySelector("[data-bb-preview-box]");
+  editor.querySelectorAll("[data-bb-tag]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!textarea) return;
+      const tag = button.dataset.bbTag || "b";
+      const start = textarea.selectionStart ?? textarea.value.length;
+      const end = textarea.selectionEnd ?? textarea.value.length;
+      const selected = textarea.value.slice(start, end) || "текст";
+      const close = tag.split("=")[0];
+      textarea.setRangeText(`[${tag}]${selected}[/${close}]`, start, end, "select");
+      textarea.focus();
+    });
+  });
+  editor.querySelector("[data-bb-preview]")?.addEventListener("click", () => {
+    if (!previewBox || !textarea) return;
+    previewBox.hidden = !previewBox.hidden;
+    previewBox.innerHTML = bbPreview(textarea.value || "");
+  });
 });
 
 document.querySelectorAll("[data-chat-feed]").forEach((chat) => {

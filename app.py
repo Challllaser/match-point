@@ -223,6 +223,17 @@ def admin_user_actions(current_user, target_user):
     return action
 
 
+def custom_role_badges(user):
+    if not user or not user["custom_role"]:
+        return ""
+    color = valid_hex(user["custom_role_color"] if "custom_role_color" in user.keys() else "", "#00e5ff")
+    color2 = valid_hex(user["custom_role_color2"] if "custom_role_color2" in user.keys() else "", "#ff5a00")
+    font = user["custom_role_font"] if "custom_role_font" in user.keys() and user["custom_role_font"] else "Inter"
+    animated = " role-flow" if "custom_role_animated" in user.keys() and user["custom_role_animated"] else ""
+    style = f"--role-color:{esc(color)};--role-color-2:{esc(color2)};font-family:{esc(font)}, var(--font, sans-serif);"
+    return "".join(f"<span class='profile-custom-role{animated}' style='{style}'>{esc(role)}</span>" for role in split_csv(user["custom_role"]))
+
+
 def ensure_column(conn, table, column, column_type):
     columns = [row["name"] for row in conn.execute(f"PRAGMA table_info({table})")]
     if column not in columns:
@@ -408,6 +419,10 @@ def init_db():
         ensure_column(conn, "users", "nickname_animated", "INTEGER")
         ensure_column(conn, "users", "about", "TEXT")
         ensure_column(conn, "users", "custom_role", "TEXT")
+        ensure_column(conn, "users", "custom_role_color", "TEXT")
+        ensure_column(conn, "users", "custom_role_color2", "TEXT")
+        ensure_column(conn, "users", "custom_role_font", "TEXT")
+        ensure_column(conn, "users", "custom_role_animated", "INTEGER")
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS profile_comments (
@@ -638,6 +653,7 @@ class App(BaseHTTPRequestHandler):
             "/admin": self.admin,
             "/admin/disciplines": self.admin_disciplines,
             "/admin/users": self.admin_users,
+            "/admin/custom-roles": self.admin_custom_roles,
             "/admin/teams": self.admin_teams,
             "/admin/tournaments": self.admin_tournaments,
             "/admin/delete": self.admin_delete,
@@ -919,13 +935,12 @@ class App(BaseHTTPRequestHandler):
         profile_style = f"--profile-color:{esc(color)};--profile-color-2:{esc(color2)};--profile-soft:{hex_to_rgba(color, .18)};--profile-glow:{hex_to_rgba(color, .38)};--nick-color:{esc(nick_color)};--nick-color-2:{esc(nick_color2)};"
         tag = f"<a class='profile-team-tag' href='/team?id={team['id']}'>[{esc(team['tag'])}]</a>" if team else ""
         edit = f"<a class='btn primary' href='/profile/edit'>Редактировать профиль</a>" if is_self else ""
-        custom = "".join(f"<span class='profile-custom-role'>{esc(role)}</span>" for role in split_csv(profile["custom_role"])) if profile["custom_role"] else ""
-        role_form = profile_role_form(profile) if is_staff(viewer) else ""
+        custom = custom_role_badges(profile)
+        role_form = ""
         comments_html = "".join(profile_comment_html(c, can_moderate or (viewer and viewer["id"] == c["author_id"])) for c in comments) or "<p class='muted'>Комментариев пока нет.</p>"
         comment_form = f"""
         <form method='post' action='/profile/comment?id={profile['id']}' class='form profile-comment-form'>
-            <input name='body' maxlength='500' placeholder='Написать комментарий...' required>
-            <p class='bbcode-hint'>BB-code: [b]жирный[/b] [i]курсив[/i] [url=https://...]ссылка[/url]</p>
+            {bbcode_editor('body', '', 'Напишите ответ...', 500)}
             <button class='btn primary'>Отправить</button>
         </form>
         """ if viewer else "<a class='btn' href='/login'>Войти, чтобы комментировать</a>"
@@ -1049,10 +1064,20 @@ class App(BaseHTTPRequestHandler):
         if not user:
             return
         profile_id = self.query.get("id")
-        custom_role = self.form().get("custom_role", "").strip()[:160]
+        data = self.form()
+        custom_role = data.get("custom_role", "").strip()[:160]
+        color = valid_hex(data.get("custom_role_color", "#00e5ff"), "#00e5ff")
+        color2 = valid_hex(data.get("custom_role_color2", "#ff5a00"), "#ff5a00")
+        font = data.get("custom_role_font", "Inter").strip()[:40]
+        if font not in ("Inter", "Orbitron", "Rajdhani", "Montserrat", "Russo One"):
+            font = "Inter"
+        animated = 1 if data.get("custom_role_animated") else 0
         with db() as conn:
-            conn.execute("UPDATE users SET custom_role=? WHERE id=?", (custom_role, profile_id))
-        self.redirect(f"/profile?id={profile_id}&msg=Кастомная роль обновлена")
+            conn.execute(
+                "UPDATE users SET custom_role=?, custom_role_color=?, custom_role_color2=?, custom_role_font=?, custom_role_animated=? WHERE id=?",
+                (custom_role, color, color2, font, animated, profile_id),
+            )
+        self.redirect(f"/admin/custom-roles?msg=Кастомные роли обновлены")
 
     def tournaments(self):
         with db() as conn:
@@ -1776,6 +1801,7 @@ class App(BaseHTTPRequestHandler):
             <section class="panel quicks">
                 <a class="quick" href="/admin/disciplines">Игровые дисциплины</a>
                 <a class="quick" href="/admin/users">Пользователи</a>
+                <a class="quick" href="/admin/custom-roles">Кастомные роли</a>
                 <a class="quick" href="/admin/teams">Команды</a>
                 <a class="quick" href="/admin/tournaments">Турниры</a>
             </section>
@@ -1831,6 +1857,17 @@ class App(BaseHTTPRequestHandler):
             action = admin_user_actions(user, u)
             rows += f"<tr><td>{u['id']}</td><td><a href='/profile?id={u['id']}'>{esc(u['login'])}</a></td><td>{esc(u['full_name']) or '-'}</td><td><span class='badge'>{esc(u['role'])}</span></td><td>{esc(u['created_at'])}</td><td>{action}</td></tr>"
         self.send_html(f"<section class='section-head'><h1>Управление пользователями</h1><a class='btn' href='/admin'>Назад</a></section>{table(['ID','Логин','ФИО','Роль','Дата регистрации','Действия'], rows)}<p class='note'>Удаление пользователя также очищает связанные членства в командах.</p>", "Пользователи")
+
+    def admin_custom_roles(self):
+        if not self.require_admin():
+            return
+        with db() as conn:
+            users = conn.execute("SELECT * FROM users ORDER BY login").fetchall()
+        cards = "".join(custom_role_admin_card(u) for u in users)
+        self.send_html(
+            f"<section class='section-head'><h1>Кастомные роли</h1><a class='btn' href='/admin'>Назад</a></section><section class='cards role-admin-grid'>{cards}</section>",
+            "Кастомные роли",
+        )
 
     def admin_teams(self):
         if not self.require_admin():
@@ -1929,7 +1966,7 @@ def layout(body, title, user, msg=None):
     <title>{esc(title)}</title>
     <link rel="icon" type="image/png" href="/static/matchpoint-logo-mark.png">
     <link rel="apple-touch-icon" href="/static/matchpoint-logo-mark.png">
-    <link rel="stylesheet" href="/static/style.css?v=profile-crop-bbcode-1">
+    <link rel="stylesheet" href="/static/style.css?v=profile-editor-roles-2">
 </head>
 <body>
     <header class="topbar">
@@ -1938,7 +1975,7 @@ def layout(body, title, user, msg=None):
         <div class="auth">{auth}</div>
     </header>
     <main class="container">{flash}{body}</main>
-    <script src="/static/app.js?v=profile-crop-bbcode-1"></script>
+    <script src="/static/app.js?v=profile-editor-roles-2"></script>
 </body>
 </html>"""
 
@@ -2119,6 +2156,51 @@ def profile_role_form(profile):
     """
 
 
+def custom_role_admin_card(user):
+    color = valid_hex(user["custom_role_color"] if "custom_role_color" in user.keys() else "", "#00e5ff")
+    color2 = valid_hex(user["custom_role_color2"] if "custom_role_color2" in user.keys() else "", "#ff5a00")
+    current_font = user["custom_role_font"] if "custom_role_font" in user.keys() and user["custom_role_font"] else "Inter"
+    fonts = "".join(f"<option {'selected' if current_font == font else ''}>{font}</option>" for font in ["Inter", "Orbitron", "Rajdhani", "Montserrat", "Russo One"])
+    animated = "checked" if "custom_role_animated" in user.keys() and user["custom_role_animated"] else ""
+    preview = custom_role_badges(user) or "<span class='muted'>Ролей нет</span>"
+    return f"""
+    <article class='card role-admin-card'>
+        <h3>{esc(display_name(user))}</h3>
+        <p class='muted'>@{esc(user['login'])} · {esc(user['role'])}</p>
+        <div class='role-preview'>{preview}</div>
+        <form method='post' action='/profile/role?id={user['id']}' class='form'>
+            <label>Роли через запятую<input name='custom_role' value='{esc(user['custom_role'] or '')}' maxlength='160' placeholder='MVP, Caster, Designer'></label>
+            <label>Цвет 1<input type='color' name='custom_role_color' value='{esc(color)}'></label>
+            <label>Цвет 2<input type='color' name='custom_role_color2' value='{esc(color2)}'></label>
+            <label>Шрифт<select name='custom_role_font'>{fonts}</select></label>
+            <label class='check'><input type='checkbox' name='custom_role_animated' {animated}> Переливание</label>
+            <button class='btn primary'>Сохранить роли</button>
+        </form>
+    </article>
+    """
+
+
+def bbcode_editor(name, value="", placeholder="", maxlength=1200):
+    buttons = [
+        ("B", "b", "Жирный"),
+        ("I", "i", "Курсив"),
+        ("U", "u", "Подчеркнутый"),
+        ("S", "s", "Зачеркнутый"),
+        ("🎨", "color=#00e5ff", "Цвет"),
+        ("🔗", "url=https://", "Ссылка"),
+        ("❝", "quote", "Цитата"),
+        ("▦", "code", "Код"),
+    ]
+    toolbar = "".join(f"<button type='button' data-bb-tag='{esc(tag)}' title='{esc(title)}'>{label}</button>" for label, tag, title in buttons)
+    return f"""
+    <div class='bb-editor' data-bb-editor>
+        <div class='bb-toolbar'>{toolbar}<button type='button' data-bb-preview>Предварительный просмотр</button></div>
+        <textarea name='{esc(name)}' maxlength='{maxlength}' placeholder='{esc(placeholder)}' data-bb-textarea>{esc(value)}</textarea>
+        <div class='bb-preview' data-bb-preview-box hidden></div>
+    </div>
+    """
+
+
 def profile_edit_form(user):
     color = profile_color(user)
     color2 = valid_hex(user["profile_color2"] if "profile_color2" in user.keys() else "", "#ff5a00")
@@ -2152,30 +2234,31 @@ def profile_edit_form(user):
             <label class='wide file-drop'><strong>Аватарка GIF/PNG/JPG/WEBP</strong><input type='file' name='avatar' accept='image/gif,image/png,image/jpeg,image/webp' data-preview-target='avatar-preview'><span>Выбрать файл</span></label>
             <img class='upload-preview avatar-preview' data-preview-id='avatar-preview' alt=''>
             <button class='btn wide' type='button' data-crop-open='avatar-cropper'>Настроить область аватарки</button>
-            <div class='wide avatar-cropper crop-panel' id='avatar-cropper' data-avatar-cropper data-x='{esc(ax_value)}' data-y='{esc(ay_value)}' hidden>
+            <div class='wide avatar-cropper crop-panel' id='avatar-cropper' data-avatar-cropper data-x='{esc(ax_value)}' data-y='{esc(ay_value)}'>
                 <h3>Область аватарки</h3>
                 <div class='crop-stage avatar-stage'>
                     <img src='{esc(avatar_src)}' alt='avatar crop preview' data-avatar-crop-image>
                     <div class='crop-frame avatar-frame' data-crop-frame><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
                 </div>
+                <div class='crop-actions'><button class='btn primary' type='button' data-crop-apply>Применить</button><span data-crop-status>Перетащи круг на нужную область.</span></div>
                 <input type='hidden' name='avatar_position' value='{esc(avatar_position)}' data-avatar-position>
             </div>
             <div class='wide'><h3>Последние аватарки</h3>{avatar_history or '<p class="muted">Пока пусто.</p>'}</div>
             <label class='wide file-drop'><strong>Баннер GIF/PNG/JPG/WEBP</strong><input type='file' name='banner' accept='image/gif,image/png,image/jpeg,image/webp' data-preview-target='banner-preview'><span>Выбрать файл</span></label>
             <img class='upload-preview banner-preview' data-preview-id='banner-preview' alt=''>
             <button class='btn wide' type='button' data-crop-open='banner-cropper'>Настроить фокус баннера</button>
-            <div class='wide banner-cropper crop-panel' id='banner-cropper' data-banner-cropper data-x='{esc(x_value)}' data-y='{esc(y_value)}' hidden>
+            <div class='wide banner-cropper crop-panel' id='banner-cropper' data-banner-cropper data-x='{esc(x_value)}' data-y='{esc(y_value)}'>
                 <h3>Фокус баннера</h3>
                 <div class='crop-stage'>
                     <img src='{esc(banner_src)}' alt='banner crop preview' data-banner-crop-image>
                     <div class='crop-frame' data-crop-frame><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
                 </div>
                 <p class='note'>Перетащи рамку на ту часть баннера, которая должна быть видна в профиле.</p>
+                <div class='crop-actions'><button class='btn primary' type='button' data-crop-apply>Применить</button><span data-crop-status>Перетащи рамку на нужную область.</span></div>
                 <input type='hidden' name='banner_position' value='{esc(banner_position)}' data-banner-position>
             </div>
             <div class='wide'><h3>Последние баннеры</h3>{banner_history or '<p class="muted">Пока пусто.</p>'}</div>
-            <label class='wide'>Обо мне<textarea name='about' maxlength='1200'>{esc(user['about'] or '')}</textarea></label>
-            <p class='bbcode-hint wide'>BB-code: [b]жирный[/b] [i]курсив[/i] [u]подчеркнутый[/u] [url=https://...]ссылка[/url] [color=#00e5ff]цвет[/color]</p>
+            <div class='wide'>{bbcode_editor('about', user['about'] or '', 'Расскажите о себе...', 1200)}</div>
             <div class='form-actions wide'><a class='btn' href='/profile?id={user['id']}'>Отмена</a><button class='btn primary'>Сохранить профиль</button></div>
         </form>
     </section>

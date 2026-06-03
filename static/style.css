@@ -1357,7 +1357,6 @@ button.primary:hover {
   flex-wrap: nowrap;
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
   line-height: 1.04;
   color: #f7f8ff;
   display: block;
@@ -1385,6 +1384,7 @@ button.primary:hover {
 
 .profile-identity h1.nick-marquee .nick-text {
   min-width: max-content;
+  max-width: none;
   animation: nickMarquee 7s ease-in-out infinite alternate;
 }
 
@@ -1410,7 +1410,7 @@ button.primary:hover {
 
 @keyframes nickMarquee {
   0%, 18% { transform: translateX(0); }
-  82%, 100% { transform: translateX(-28%); }
+  82%, 100% { transform: translateX(calc(-100% + min(100%, 230px))); }
 }
 
 .profile-about {
@@ -1993,10 +1993,16 @@ button.primary:hover {
 }
 
 .crop-panel {
+  display: none;
   padding: 16px;
   border-radius: 18px;
   border: 1px solid rgba(0,229,255,.22);
   background: rgba(255,255,255,.055);
+}
+
+.crop-panel.is-open {
+  display: grid;
+  gap: 12px;
 }
 
 .crop-stage {
@@ -2061,10 +2067,108 @@ button.primary:hover {
   border: 1px solid rgba(255,255,255,.24);
 }
 
+.crop-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.crop-actions span {
+  color: rgba(224,230,255,.78);
+  font-size: 12px;
+}
+
 .bbcode-hint {
   margin: 0;
   color: rgba(224,230,255,.78);
   font-size: 12px;
+}
+
+.bb-editor {
+  border: 1px solid rgba(255,255,255,.18);
+  background: #242424;
+  min-height: 160px;
+}
+
+.bb-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 10px;
+  border-bottom: 1px solid rgba(255,255,255,.14);
+  background: #202020;
+}
+
+.bb-toolbar button {
+  min-width: 34px;
+  min-height: 32px;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 6px;
+  color: #d8d8d8;
+  background: transparent;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.bb-toolbar button:hover {
+  color: #fff;
+  background: rgba(255,255,255,.09);
+  box-shadow: 0 0 14px rgba(0,229,255,.12);
+}
+
+.bb-toolbar [data-bb-preview] {
+  margin-left: auto;
+  width: auto;
+  border: 1px solid rgba(255,255,255,.18);
+  background: rgba(255,255,255,.07);
+}
+
+.bb-editor textarea {
+  min-height: 112px;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: #242424;
+  box-shadow: none;
+  resize: vertical;
+}
+
+.bb-preview {
+  padding: 12px;
+  border-top: 1px solid rgba(255,255,255,.12);
+  color: #eef3ff;
+  background: rgba(255,255,255,.04);
+}
+
+.role-admin-grid {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
+.role-admin-card .role-preview {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.profile-custom-role {
+  color: #051018;
+  background: linear-gradient(135deg, var(--role-color, var(--profile-color)), var(--role-color-2, var(--profile-color-2)));
+  border-color: color-mix(in srgb, var(--role-color, var(--profile-color)) 70%, white);
+}
+
+.profile-custom-role.role-flow {
+  background-size: 220% 100%;
+  animation: roleGradientFlow 3.5s ease-in-out infinite alternate;
+}
+
+@keyframes roleGradientFlow {
+  from { background-position: 0% 50%; }
+  to { background-position: 100% 50%; }
 }
 
 .profile-about a,
